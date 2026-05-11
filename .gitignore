@@ -18,3 +18,16 @@ api-potluck-data.json
 model-usage-stats.json
 AGENTS.md
 
+# Secrets & runtime state (二开加强)
+configs/kiro/
+configs/gemini/
+configs/antigravity/
+configs/codex/
+configs/iflow/
+configs/pwd
+configs/*.json
+!configs/*.json.example
+debug_logs/
+.env
+.env.*
+!.env.example

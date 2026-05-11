@@ -19,12 +19,14 @@ model-usage-stats.json
 AGENTS.md
 
 # Secrets & runtime state (二开加强)
+deploy-staging/
 configs/kiro/
 configs/gemini/
 configs/antigravity/
 configs/codex/
 configs/iflow/
 configs/pwd
+**/pwd
 configs/*.json
 !configs/*.json.example
 debug_logs/

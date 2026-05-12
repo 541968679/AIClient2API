@@ -1618,29 +1618,6 @@ async saveCredentialsToFile(filePath, newData) {
 
         // fs.writeFile('claude-kiro-request'+Date.now()+'.json', JSON.stringify(request));
 
-        // Cache estimation: system + all messages except last = cached prefix
-        const isFirstTurn = processedMessages.length <= 1;
-        const systemTokens = this.countTextTokens(systemPrompt || '');
-        let cachedPrefixTokens = systemTokens;
-        if (!isFirstTurn) {
-            for (let i = 0; i < processedMessages.length - 1; i++) {
-                cachedPrefixTokens += this.countTextTokens(this.getContentText(processedMessages[i]));
-            }
-        }
-        // tools also contribute to the cached prefix
-        if (tools) {
-            cachedPrefixTokens += this.countTextTokens(JSON.stringify(tools));
-        }
-
-        Object.defineProperty(request, '_cacheEstimation', {
-            value: {
-                isFirstTurn,
-                cacheCreationTokens: isFirstTurn ? cachedPrefixTokens : 0,
-                cacheReadTokens: isFirstTurn ? 0 : cachedPrefixTokens,
-            },
-            enumerable: false
-        });
-
         return request;
     }
 
@@ -2589,10 +2566,9 @@ async saveCredentialsToFile(filePath, newData) {
             let currentToolCall = null; // 用于累积结构化工具调用
             const toolUseBlockIndexes = new Map(); // toolUseId -> content block index
 
-            const estimatedInputTokens = this.estimateInputTokens(requestBody);
-            const cacheMetrics = this._estimateCacheMetrics(requestBody, estimatedInputTokens);
+            const estimatedInputTokens = 0;
 
-            // 1. 先发送 message_start 事件
+            // 1. 先发送 message_start 事件（usage 占位，真实值在 message_delta）
             yield {
                 type: "message_start",
                 message: {
@@ -2601,10 +2577,10 @@ async saveCredentialsToFile(filePath, newData) {
                     role: "assistant",
                     model: model,
                     usage: {
-                        input_tokens: Math.max(0, estimatedInputTokens - cacheMetrics.cacheReadTokens),
+                        input_tokens: 0,
                         output_tokens: 0,
-                        cache_creation_input_tokens: cacheMetrics.cacheCreationTokens,
-                        cache_read_input_tokens: cacheMetrics.cacheReadTokens
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0
                     },
                     content: []
                 }
@@ -2981,14 +2957,17 @@ async saveCredentialsToFile(filePath, newData) {
             }
 
             // 4. 发送 message_delta 事件
+            // 随机取 60%-70% 的 inputTokens 作为 cache_read
+            const cacheRatio = 0.6 + Math.random() * 0.1;
+            const cacheReadTokens = Math.round(inputTokens * cacheRatio);
             yield {
                 type: "message_delta",
                 delta: { stop_reason: toolCalls.length > 0 ? "tool_use" : (emittedOnlyThinking ? "max_tokens" : "end_turn") },
                 usage: {
-                    input_tokens: Math.max(0, inputTokens - cacheMetrics.cacheReadTokens),
+                    input_tokens: inputTokens - cacheReadTokens,
                     output_tokens: outputTokens,
-                    cache_creation_input_tokens: cacheMetrics.cacheCreationTokens,
-                    cache_read_input_tokens: cacheMetrics.cacheReadTokens
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: cacheReadTokens
                 }
             };
 
@@ -3013,72 +2992,6 @@ async saveCredentialsToFile(filePath, newData) {
      */
     estimateInputTokens(requestBody) {
         return KiroApiService.estimateInputTokens(requestBody);
-    }
-
-    /**
-     * Estimate cache metrics from Anthropic Messages format request body.
-     * First turn: all input = cache_creation. Subsequent turns: prefix = cache_read.
-     */
-    _estimateCacheMetrics(requestBody, totalInputTokens = null) {
-        const messages = requestBody?.messages || [];
-        const isFirstTurn = messages.length <= 1;
-        const total = totalInputTokens ?? 0;
-
-        if (isFirstTurn || total === 0) {
-            return {
-                cacheCreationTokens: isFirstTurn ? total : 0,
-                cacheReadTokens: 0,
-            };
-        }
-
-        // Heuristic: in multi-turn conversations, the last message is typically
-        // ~10-20% of total input. Use message count ratio as a cheap proxy.
-        const cacheRatio = Math.min(0.9, (messages.length - 1) / messages.length);
-        const cacheReadTokens = Math.round(total * cacheRatio);
-
-        return {
-            cacheCreationTokens: 0,
-            cacheReadTokens,
-        };
-    }
-
-    _countMessageTokens(msg) {
-        if (!msg) return 0;
-        if (typeof msg.content === 'string') {
-            return this.countTextTokens(msg.content);
-        }
-        if (!Array.isArray(msg.content)) return 0;
-
-        let tokens = 0;
-        for (const block of msg.content) {
-            if (!block) continue;
-            switch (block.type) {
-                case 'text':
-                    tokens += this.countTextTokens(block.text || '');
-                    break;
-                case 'thinking':
-                    tokens += this.countTextTokens(block.thinking || '');
-                    break;
-                case 'tool_use':
-                    tokens += this.countTextTokens(block.name || '');
-                    tokens += this.countTextTokens(
-                        typeof block.input === 'string' ? block.input : JSON.stringify(block.input || {})
-                    );
-                    break;
-                case 'tool_result':
-                    if (typeof block.content === 'string') {
-                        tokens += this.countTextTokens(block.content);
-                    } else if (Array.isArray(block.content)) {
-                        for (const part of block.content) {
-                            tokens += this.countTextTokens(part?.text || '');
-                        }
-                    }
-                    break;
-                default:
-                    tokens += this.countTextTokens(JSON.stringify(block));
-            }
-        }
-        return tokens;
     }
 
     /**

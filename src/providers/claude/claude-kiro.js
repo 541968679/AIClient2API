@@ -3021,24 +3021,25 @@ async saveCredentialsToFile(filePath, newData) {
      */
     _estimateCacheMetrics(requestBody) {
         const messages = requestBody?.messages || [];
-        const systemText = this.getContentText(requestBody?.system) || '';
-        const toolsText = requestBody?.tools ? JSON.stringify(requestBody.tools) : '';
-
-        const systemTokens = this.countTextTokens(systemText);
-        const toolsTokens = this.countTextTokens(toolsText);
-
-        // First turn: only 1 message (single user message)
         const isFirstTurn = messages.length <= 1;
 
-        // Cached prefix = system + tools + all messages except the last
-        let prefixTokens = systemTokens + toolsTokens;
-        for (let i = 0; i < messages.length - 1; i++) {
-            prefixTokens += this._countMessageTokens(messages[i]);
+        // Use the fast estimateInputTokens for total, then subtract last message
+        const totalInputTokens = this.estimateInputTokens(requestBody);
+
+        if (isFirstTurn) {
+            return {
+                cacheCreationTokens: totalInputTokens,
+                cacheReadTokens: 0,
+            };
         }
 
+        // Only count the last message (the new part) — O(1) instead of O(N)
+        const lastMessageTokens = this._countMessageTokens(messages[messages.length - 1]);
+        const cacheReadTokens = Math.max(0, totalInputTokens - lastMessageTokens);
+
         return {
-            cacheCreationTokens: isFirstTurn ? prefixTokens : 0,
-            cacheReadTokens: isFirstTurn ? 0 : prefixTokens,
+            cacheCreationTokens: 0,
+            cacheReadTokens,
         };
     }
 

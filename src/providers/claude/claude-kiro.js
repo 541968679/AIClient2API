@@ -3022,21 +3022,19 @@ async saveCredentialsToFile(filePath, newData) {
     _estimateCacheMetrics(requestBody, totalInputTokens = null) {
         const messages = requestBody?.messages || [];
         const isFirstTurn = messages.length <= 1;
+        const total = totalInputTokens ?? 0;
 
-        // Use pre-computed total if available, avoid expensive recomputation
-        const total = totalInputTokens ?? this.estimateInputTokens(requestBody);
-
-        if (isFirstTurn) {
+        if (isFirstTurn || total === 0) {
             return {
-                cacheCreationTokens: total,
+                cacheCreationTokens: isFirstTurn ? total : 0,
                 cacheReadTokens: 0,
             };
         }
 
-        // Estimate last message tokens cheaply: last message is the only "new" part
-        const lastMsg = messages[messages.length - 1];
-        const lastMsgTokens = this._countMessageTokens(lastMsg);
-        const cacheReadTokens = Math.max(0, total - lastMsgTokens);
+        // Heuristic: in multi-turn conversations, the last message is typically
+        // ~10-20% of total input. Use message count ratio as a cheap proxy.
+        const cacheRatio = Math.min(0.9, (messages.length - 1) / messages.length);
+        const cacheReadTokens = Math.round(total * cacheRatio);
 
         return {
             cacheCreationTokens: 0,

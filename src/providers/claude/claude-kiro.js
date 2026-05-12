@@ -539,6 +539,49 @@ function deduplicateToolCalls(toolCalls) {
     return uniqueToolCalls;
 }
 
+/**
+ * Derive a stable conversationId from session metadata.
+ * Claude Code sends metadata.user_id containing session info; we hash it to get
+ * a deterministic UUID so Amazon Q can reuse server-side context cache across turns.
+ */
+function deriveStableConversationId(metadata) {
+    if (!metadata) return uuidv4();
+
+    const rawUserId = metadata.user_id || metadata.userId || '';
+    if (!rawUserId) return uuidv4();
+
+    let sessionKey = '';
+    try {
+        const parsed = JSON.parse(rawUserId);
+        sessionKey = parsed.session_id || parsed.sessionId || parsed.device_id || rawUserId;
+    } catch {
+        sessionKey = rawUserId;
+    }
+
+    if (!sessionKey) return uuidv4();
+
+    const hash = crypto.createHash('sha256').update(sessionKey).digest('hex');
+    return [
+        hash.slice(0, 8),
+        hash.slice(8, 12),
+        '4' + hash.slice(13, 16),
+        ((parseInt(hash[16], 16) & 0x3) | 0x8).toString(16) + hash.slice(17, 20),
+        hash.slice(20, 32)
+    ].join('-');
+}
+
+/**
+ * Filter x-anthropic-billing-header lines from system prompt.
+ * The cch= value changes every turn, making the prompt unstable and preventing caching.
+ */
+function filterBillingHeaderFromSystem(systemText) {
+    if (!systemText || typeof systemText !== 'string') return systemText;
+    return systemText
+        .split('\n')
+        .filter(line => !line.trimStart().startsWith('x-anthropic-billing-header'))
+        .join('\n');
+}
+
 export class KiroApiService {
     constructor(config = {}) {
         this.isInitialized = false;
@@ -1042,8 +1085,9 @@ async saveCredentialsToFile(filePath, newData) {
     /**
      * Build CodeWhisperer request from OpenAI messages
      */
-    async buildCodewhispererRequest(messages, model, tools = null, inSystemPrompt = null, thinking = null) {
-        const conversationId = uuidv4();
+    async buildCodewhispererRequest(messages, model, tools = null, inSystemPrompt = null, thinking = null, metadata = null) {
+        const conversationId = deriveStableConversationId(metadata);
+        logger.info(`[Kiro] conversationId: ${conversationId} (metadata: ${!!metadata})`);
         
         // 内置的 systemPrompt 前缀
         const builtInPrefix = `<CRITICAL_OVERRIDE>
@@ -1062,6 +1106,9 @@ async saveCredentialsToFile(filePath, newData) {
         } else {
             systemPrompt = `${builtInPrefix}`;
         }
+
+        // Filter unstable billing header to enable server-side caching
+        systemPrompt = filterBillingHeaderFromSystem(systemPrompt);
         
         const processedMessages = messages.map(message => ({
             ...message,
@@ -1570,6 +1617,30 @@ async saveCredentialsToFile(filePath, newData) {
         }
 
         // fs.writeFile('claude-kiro-request'+Date.now()+'.json', JSON.stringify(request));
+
+        // Cache estimation: system + all messages except last = cached prefix
+        const isFirstTurn = processedMessages.length <= 1;
+        const systemTokens = this.countTextTokens(systemPrompt || '');
+        let cachedPrefixTokens = systemTokens;
+        if (!isFirstTurn) {
+            for (let i = 0; i < processedMessages.length - 1; i++) {
+                cachedPrefixTokens += this.countTextTokens(this.getContentText(processedMessages[i]));
+            }
+        }
+        // tools also contribute to the cached prefix
+        if (tools) {
+            cachedPrefixTokens += this.countTextTokens(JSON.stringify(tools));
+        }
+
+        Object.defineProperty(request, '_cacheEstimation', {
+            value: {
+                isFirstTurn,
+                cacheCreationTokens: isFirstTurn ? cachedPrefixTokens : 0,
+                cacheReadTokens: isFirstTurn ? 0 : cachedPrefixTokens,
+            },
+            enumerable: false
+        });
+
         return request;
     }
 
@@ -1689,7 +1760,7 @@ async saveCredentialsToFile(filePath, newData) {
             throw new Error('No messages found in request body');
         }
 
-        const requestData = await this.buildCodewhispererRequest(messages, model, body.tools, body.system, body.thinking);
+        const requestData = await this.buildCodewhispererRequest(messages, model, body.tools, body.system, body.thinking, body.metadata);
 
         try {
             const token = this.accessToken; // Use the already initialized token
@@ -2237,7 +2308,7 @@ async saveCredentialsToFile(filePath, newData) {
             throw new Error('No messages found in request body');
         }
 
-        const requestData = await this.buildCodewhispererRequest(messages, model, body.tools, body.system, body.thinking);
+        const requestData = await this.buildCodewhispererRequest(messages, model, body.tools, body.system, body.thinking, body.metadata);
         const toolNameMaps = requestData._kiroToolNameMaps;
 
         const token = this.accessToken;
@@ -2519,6 +2590,7 @@ async saveCredentialsToFile(filePath, newData) {
             const toolUseBlockIndexes = new Map(); // toolUseId -> content block index
 
             const estimatedInputTokens = this.estimateInputTokens(requestBody);
+            const cacheMetrics = this._estimateCacheMetrics(requestBody);
 
             // 1. 先发送 message_start 事件
             yield {
@@ -2529,10 +2601,10 @@ async saveCredentialsToFile(filePath, newData) {
                     role: "assistant",
                     model: model,
                     usage: {
-                        input_tokens: estimatedInputTokens,
+                        input_tokens: Math.max(0, estimatedInputTokens - cacheMetrics.cacheReadTokens),
                         output_tokens: 0,
-                        cache_creation_input_tokens: 0,
-                        cache_read_input_tokens: 0
+                        cache_creation_input_tokens: cacheMetrics.cacheCreationTokens,
+                        cache_read_input_tokens: cacheMetrics.cacheReadTokens
                     },
                     content: []
                 }
@@ -2913,10 +2985,10 @@ async saveCredentialsToFile(filePath, newData) {
                 type: "message_delta",
                 delta: { stop_reason: toolCalls.length > 0 ? "tool_use" : (emittedOnlyThinking ? "max_tokens" : "end_turn") },
                 usage: {
-                    input_tokens: inputTokens,
+                    input_tokens: Math.max(0, inputTokens - cacheMetrics.cacheReadTokens),
                     output_tokens: outputTokens,
-                    cache_creation_input_tokens: 0,
-                    cache_read_input_tokens: 0
+                    cache_creation_input_tokens: cacheMetrics.cacheCreationTokens,
+                    cache_read_input_tokens: cacheMetrics.cacheReadTokens
                 }
             };
 
@@ -2941,6 +3013,72 @@ async saveCredentialsToFile(filePath, newData) {
      */
     estimateInputTokens(requestBody) {
         return KiroApiService.estimateInputTokens(requestBody);
+    }
+
+    /**
+     * Estimate cache metrics from Anthropic Messages format request body.
+     * First turn: all input = cache_creation. Subsequent turns: prefix = cache_read.
+     */
+    _estimateCacheMetrics(requestBody) {
+        const messages = requestBody?.messages || [];
+        const systemText = this.getContentText(requestBody?.system) || '';
+        const toolsText = requestBody?.tools ? JSON.stringify(requestBody.tools) : '';
+
+        const systemTokens = this.countTextTokens(systemText);
+        const toolsTokens = this.countTextTokens(toolsText);
+
+        // First turn: only 1 message (single user message)
+        const isFirstTurn = messages.length <= 1;
+
+        // Cached prefix = system + tools + all messages except the last
+        let prefixTokens = systemTokens + toolsTokens;
+        for (let i = 0; i < messages.length - 1; i++) {
+            prefixTokens += this._countMessageTokens(messages[i]);
+        }
+
+        return {
+            cacheCreationTokens: isFirstTurn ? prefixTokens : 0,
+            cacheReadTokens: isFirstTurn ? 0 : prefixTokens,
+        };
+    }
+
+    _countMessageTokens(msg) {
+        if (!msg) return 0;
+        if (typeof msg.content === 'string') {
+            return this.countTextTokens(msg.content);
+        }
+        if (!Array.isArray(msg.content)) return 0;
+
+        let tokens = 0;
+        for (const block of msg.content) {
+            if (!block) continue;
+            switch (block.type) {
+                case 'text':
+                    tokens += this.countTextTokens(block.text || '');
+                    break;
+                case 'thinking':
+                    tokens += this.countTextTokens(block.thinking || '');
+                    break;
+                case 'tool_use':
+                    tokens += this.countTextTokens(block.name || '');
+                    tokens += this.countTextTokens(
+                        typeof block.input === 'string' ? block.input : JSON.stringify(block.input || {})
+                    );
+                    break;
+                case 'tool_result':
+                    if (typeof block.content === 'string') {
+                        tokens += this.countTextTokens(block.content);
+                    } else if (Array.isArray(block.content)) {
+                        for (const part of block.content) {
+                            tokens += this.countTextTokens(part?.text || '');
+                        }
+                    }
+                    break;
+                default:
+                    tokens += this.countTextTokens(JSON.stringify(block));
+            }
+        }
+        return tokens;
     }
 
     /**

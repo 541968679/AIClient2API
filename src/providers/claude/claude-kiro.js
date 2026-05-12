@@ -3412,7 +3412,8 @@ async saveCredentialsToFile(filePath, newData) {
         const axiosConfig = {
             method: 'get',
             url: fullUrl,
-            headers
+            headers,
+            timeout: 10000
         };
         this._applySidecar(axiosConfig);
 

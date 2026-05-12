@@ -2590,7 +2590,7 @@ async saveCredentialsToFile(filePath, newData) {
             const toolUseBlockIndexes = new Map(); // toolUseId -> content block index
 
             const estimatedInputTokens = this.estimateInputTokens(requestBody);
-            const cacheMetrics = this._estimateCacheMetrics(requestBody);
+            const cacheMetrics = this._estimateCacheMetrics(requestBody, estimatedInputTokens);
 
             // 1. 先发送 message_start 事件
             yield {
@@ -3019,23 +3019,24 @@ async saveCredentialsToFile(filePath, newData) {
      * Estimate cache metrics from Anthropic Messages format request body.
      * First turn: all input = cache_creation. Subsequent turns: prefix = cache_read.
      */
-    _estimateCacheMetrics(requestBody) {
+    _estimateCacheMetrics(requestBody, totalInputTokens = null) {
         const messages = requestBody?.messages || [];
         const isFirstTurn = messages.length <= 1;
 
-        // Use the fast estimateInputTokens for total, then subtract last message
-        const totalInputTokens = this.estimateInputTokens(requestBody);
+        // Use pre-computed total if available, avoid expensive recomputation
+        const total = totalInputTokens ?? this.estimateInputTokens(requestBody);
 
         if (isFirstTurn) {
             return {
-                cacheCreationTokens: totalInputTokens,
+                cacheCreationTokens: total,
                 cacheReadTokens: 0,
             };
         }
 
-        // Only count the last message (the new part) — O(1) instead of O(N)
-        const lastMessageTokens = this._countMessageTokens(messages[messages.length - 1]);
-        const cacheReadTokens = Math.max(0, totalInputTokens - lastMessageTokens);
+        // Estimate last message tokens cheaply: last message is the only "new" part
+        const lastMsg = messages[messages.length - 1];
+        const lastMsgTokens = this._countMessageTokens(lastMsg);
+        const cacheReadTokens = Math.max(0, total - lastMsgTokens);
 
         return {
             cacheCreationTokens: 0,

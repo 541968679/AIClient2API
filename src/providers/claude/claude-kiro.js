@@ -86,6 +86,242 @@ function buildKiroToolNameMaps(tools) {
     };
 }
 
+function isWebSearchTool(tool) {
+    const name = String(tool?.name || '').toLowerCase();
+    const type = String(tool?.type || '').toLowerCase();
+    return name === 'web_search' || name === 'websearch' || type === 'web_search_20250305';
+}
+
+function hasNativeClaudeWebSearchTool(requestBody) {
+    return Array.isArray(requestBody?.tools) &&
+        requestBody.tools.some(tool => String(tool?.type || '').toLowerCase() === 'web_search_20250305');
+}
+
+function decodeHtmlEntities(text) {
+    if (!text) return '';
+    const named = {
+        amp: '&',
+        lt: '<',
+        gt: '>',
+        quot: '"',
+        apos: "'",
+        nbsp: ' '
+    };
+    return String(text)
+        .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+        .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+        .replace(/&([a-z]+);/gi, (_, name) => named[name.toLowerCase()] || `&${name};`);
+}
+
+function stripHtml(text) {
+    return decodeHtmlEntities(String(text || '').replace(/<[^>]*>/g, ' '))
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function extractClaudeTextContent(content) {
+    if (typeof content === 'string') {
+        return content;
+    }
+    if (!Array.isArray(content)) {
+        return '';
+    }
+    return content
+        .map(part => {
+            if (typeof part === 'string') return part;
+            if (part?.type === 'text') return part.text || '';
+            return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+}
+
+function extractWebSearchQuery(requestBody) {
+    const messages = Array.isArray(requestBody?.messages) ? requestBody.messages : [];
+    const userTexts = messages
+        .filter(message => message?.role === 'user')
+        .map(message => extractClaudeTextContent(message.content).trim())
+        .filter(Boolean);
+    const latestText = userTexts[userTexts.length - 1] || '';
+    if (!latestText) {
+        return '';
+    }
+
+    const quotedPatterns = [
+        /(?:query|search(?:\s+query)?)[\s:]+["'“”‘’]([^"'“”‘’]+)["'“”‘’]/i,
+        /(?:search\s+(?:the\s+web\s+)?for|look\s+up|find)[\s:]+["'“”‘’]([^"'“”‘’]+)["'“”‘’]/i,
+        /Web search results for query:\s*["'“”‘’]([^"'“”‘’]+)["'“”‘’]/i
+    ];
+    for (const pattern of quotedPatterns) {
+        const match = latestText.match(pattern);
+        if (match?.[1]?.trim()) {
+            return match[1].trim();
+        }
+    }
+
+    const unquotedPatterns = [
+        /^\s*perform\s+a\s+web\s+search\s+for\s+the\s+query\s*:\s*(.+)$/i,
+        /^\s*web\s+search\s+for\s+the\s+query\s*:\s*(.+)$/i,
+        /^\s*search\s+the\s+web\s+for\s*:\s*(.+)$/i,
+        /^\s*search\s+query\s*:\s*(.+)$/i,
+        /^\s*query\s*:\s*(.+)$/i
+    ];
+    for (const pattern of unquotedPatterns) {
+        const match = latestText.match(pattern);
+        if (match?.[1]?.trim()) {
+            return match[1].trim().replace(/^["'“”‘’]|["'“”‘’]$/g, '').slice(0, 300);
+        }
+    }
+
+    const firstLine = latestText.split(/\r?\n/).map(line => line.trim()).find(Boolean) || latestText;
+    return firstLine.replace(/^["'“”‘’]|["'“”‘’]$/g, '').trim().slice(0, 300);
+}
+
+function parseBingRssResults(xml) {
+    const results = [];
+    const itemRegex = /<item\b[\s\S]*?<\/item>/gi;
+    let match;
+
+    while ((match = itemRegex.exec(String(xml || ''))) !== null && results.length < 8) {
+        const item = match[0];
+        const title = stripHtml((item.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '');
+        const url = decodeHtmlEntities((item.match(/<link>([\s\S]*?)<\/link>/i) || [])[1] || '').trim();
+        const snippet = stripHtml((item.match(/<description>([\s\S]*?)<\/description>/i) || [])[1] || '');
+        const pageAge = stripHtml((item.match(/<pubDate>([\s\S]*?)<\/pubDate>/i) || [])[1] || '');
+
+        if (title && url && /^https?:\/\//i.test(url) && !results.some(result => result.url === url)) {
+            results.push({ title, url, snippet, page_age: pageAge || undefined });
+        }
+    }
+
+    return results;
+}
+
+function parseBingHtmlResults(html) {
+    const results = [];
+    const resultRegex = /<li[^>]+class="[^"]*b_algo[^"]*"[\s\S]*?<h2>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>[\s\S]*?(?:<p[^>]*>([\s\S]*?)<\/p>)?/gi;
+    let match;
+
+    while ((match = resultRegex.exec(String(html || ''))) !== null && results.length < 8) {
+        const url = decodeHtmlEntities(match[1] || '').trim();
+        const title = stripHtml(match[2]);
+        const snippet = stripHtml(match[3] || '');
+
+        if (title && url && /^https?:\/\//i.test(url) && !results.some(result => result.url === url)) {
+            results.push({ title, url, snippet });
+        }
+    }
+
+    return results;
+}
+
+function formatSearchResults(query, results) {
+    if (!results.length) {
+        return `Web search results for query: "${query}"\n\nNo search results were found.`;
+    }
+
+    const lines = [`Web search results for query: "${query}"`, ''];
+    results.slice(0, 5).forEach((result, index) => {
+        lines.push(`${index + 1}. ${result.title}`);
+        if (result.url) {
+            lines.push(`   ${result.url}`);
+        }
+        if (result.snippet) {
+            lines.push(`   ${result.snippet}`);
+        }
+        if (result.page_age) {
+            lines.push(`   Updated: ${result.page_age}`);
+        }
+        lines.push('');
+    });
+    return lines.join('\n').trim();
+}
+
+function normalizeWebSearchQuery(query) {
+    const raw = String(query || '').trim();
+    return raw ? [raw] : [];
+}
+
+function scoreWebSearchResults(query, results) {
+    const normalized = String(query || '').toLowerCase();
+    const stopTokens = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'what', 'when', 'where', 'how', 'why', 'today', 'latest', 'release', 'version', 'announcement', 'official', 'site', 'query']);
+    const tokens = normalized
+        .split(/[^a-z0-9]+/i)
+        .filter(token => token.length >= 3 && !stopTokens.has(token));
+
+    return (Array.isArray(results) ? results : []).map(result => {
+        const title = String(result?.title || '').toLowerCase();
+        const url = String(result?.url || '').toLowerCase();
+        const snippet = String(result?.snippet || '').toLowerCase();
+        let score = 0;
+
+        for (const token of tokens) {
+            if (title.includes(token)) score += 10;
+            if (snippet.includes(token)) score += 6;
+            if (url.includes(token)) score += 3;
+        }
+
+        return { ...result, _score: score };
+    }).sort((a, b) => b._score - a._score).map(({ _score, ...rest }) => rest);
+}
+
+function isStrongWebSearchMatch(query, result) {
+    const normalized = String(query || '').toLowerCase();
+    const haystack = [result?.title || '', result?.url || '', result?.snippet || ''].join(' ').toLowerCase();
+    const stopTokens = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'what', 'when', 'where', 'how', 'why', 'today', 'latest', 'release', 'version', 'announcement', 'official', 'site', 'query']);
+    const tokens = normalized
+        .split(/[^a-z0-9]+/i)
+        .filter(token => token.length >= 3 && !stopTokens.has(token));
+
+    return tokens.length > 0 && tokens.some(token => haystack.includes(token));
+}
+
+function buildClaudeWebSearchContent(query, results) {
+    return formatSearchResults(query, Array.isArray(results) ? results : []);
+}
+
+function getKiroToolDescription(tool) {
+    if (tool?.description && tool.description.trim() !== '') {
+        return tool.description;
+    }
+    if (isWebSearchTool(tool)) {
+        return 'Search the web for current information and return relevant results with sources.';
+    }
+    return '';
+}
+
+function getKiroToolInputSchema(tool) {
+    if (tool?.input_schema) {
+        return tool.input_schema;
+    }
+    if (tool?.inputSchema) {
+        return tool.inputSchema;
+    }
+    if (isWebSearchTool(tool)) {
+        return {
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'string',
+                    description: 'The web search query.'
+                }
+            },
+            required: ['query']
+        };
+    }
+    return {};
+}
+
+function getKiroToolName(tool, toolNameMaps) {
+    if (tool?.name) {
+        return toolNameMaps.toKiroName(tool.name);
+    }
+    if (isWebSearchTool(tool)) {
+        return 'web_search';
+    }
+    return toolNameMaps.toKiroName(tool?.name);
+}
+
 function restoreKiroToolCallNames(toolCalls, toolNameMaps) {
     if (!toolCalls || !toolNameMaps?.fromKiroName) {
         return toolCalls;
@@ -1182,12 +1418,15 @@ async saveCredentialsToFile(filePath, newData) {
         if (tools && Array.isArray(tools) && tools.length > 0) {
             // 过滤掉 web_search 或 websearch 工具（忽略大小写）
             const filteredTools = tools.filter(tool => {
-                const name = (tool.name || '').toLowerCase();
-                const shouldIgnore = name === 'web_search' || name === 'websearch';
-                if (shouldIgnore) {
-                    logger.info(`[Kiro] Ignoring tool: ${tool.name}`);
+                if (isWebSearchTool(tool)) {
+                    return true;
                 }
-                return !shouldIgnore;
+                const description = getKiroToolDescription(tool);
+                if (!description || description.trim() === '') {
+                    logger.info(`[Kiro] Ignoring tool with empty description: ${tool.name}`);
+                    return false;
+                }
+                return true;
             });
             
             if (filteredTools.length === 0) {
@@ -1213,14 +1452,15 @@ async saveCredentialsToFile(filePath, newData) {
                 const kiroTools = filteredTools
                     .filter(tool => {
                         // 过滤掉描述为空的工具
-                        if (!tool.description || tool.description.trim() === '') {
+                        const description = getKiroToolDescription(tool);
+                        if (!description || description.trim() === '') {
                             logger.info(`[Kiro] Ignoring tool with empty description: ${tool.name}`);
                             return false;
                         }
                         return true;
                     })
                     .map(tool => {
-                        let desc = tool.description || "";
+                        let desc = getKiroToolDescription(tool);
                         const originalLength = desc.length;
                         
                         if (desc.length > MAX_DESCRIPTION_LENGTH) {
@@ -1231,10 +1471,10 @@ async saveCredentialsToFile(filePath, newData) {
                         
                         return {
                             toolSpecification: {
-                                name: toolNameMaps.toKiroName(tool.name),
+                                name: getKiroToolName(tool, toolNameMaps),
                                 description: desc,
                                 inputSchema: {
-                                    json: tool.input_schema || {}
+                                    json: getKiroToolInputSchema(tool)
                                 }
                             }
                         };
@@ -2103,7 +2343,17 @@ async saveCredentialsToFile(filePath, newData) {
         if (requestBody._requestBaseUrl) {
             delete requestBody._requestBaseUrl;
         }
-        
+
+        if (hasNativeClaudeWebSearchTool(requestBody)) {
+            const query = extractWebSearchQuery(requestBody);
+            logger.info('[Kiro] Handling native Claude web search request: ' + (query || '(empty query)'));
+            const searchOutcome = await this._performWebSearch(query);
+            const results = searchOutcome.results || [];
+            const content = buildClaudeWebSearchContent(query, results);
+            const inputTokens = this.estimateInputTokens(requestBody);
+            return this.buildClaudeResponse(content, false, 'assistant', model, null, inputTokens);
+        }
+
         // 检查 token 是否即将过期，如果是则推送到刷新队列
         if (this.isExpiryDateNear()) {
             logger.info('[Kiro] Token is near expiry, marking credential as need refresh...');
@@ -2444,6 +2694,55 @@ async saveCredentialsToFile(filePath, newData) {
     }
 
     // 真正的流式传输实现
+    async _performWebSearch(query) {
+        if (!query) {
+            return { results: [], requestCount: 0 };
+        }
+
+        const queryList = normalizeWebSearchQuery(query);
+        const mergedResults = new Map();
+        let requestCount = 0;
+
+        for (const searchQuery of queryList) {
+            const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(searchQuery)}&format=rss&mkt=en-US`;
+            const axiosConfig = {
+                method: 'get',
+                url: searchUrl,
+                timeout: 15000,
+                responseType: 'text',
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+                    'Accept': 'application/rss+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8'
+                }
+            };
+
+            try {
+                requestCount++;
+                const response = await this.axiosInstance.request(axiosConfig);
+                const body = response.data || '';
+                const results = parseBingRssResults(body).concat(parseBingHtmlResults(body))
+                    .filter((result, index, all) => all.findIndex(item => item.url === result.url) === index)
+                    .slice(0, 8);
+
+                for (const result of results) {
+                    if (!mergedResults.has(result.url)) {
+                        mergedResults.set(result.url, result);
+                    }
+                }
+
+                if (results.some(item => isStrongWebSearchMatch(query, item))) {
+                    break;
+                }
+            } catch (error) {
+                logger.error(`[Kiro] Web search failed for query "${searchQuery}": ${error.message}`);
+            }
+        }
+
+        const mergedList = Array.from(mergedResults.values());
+        const preferred = scoreWebSearchResults(query, mergedList);
+        return { results: preferred.length ? preferred : mergedList, requestCount };
+    }
+
     async * generateContentStream(model, requestBody) {
         if (!this.isInitialized) await this.initialize();
 
@@ -2461,7 +2760,21 @@ async saveCredentialsToFile(filePath, newData) {
             logger.info('[Kiro] Token is near expiry, marking credential as need refresh...');
             this._markCredentialNeedRefresh('Token near expiry in generateContentStream');
         }
-        
+
+        if (hasNativeClaudeWebSearchTool(requestBody)) {
+            const query = extractWebSearchQuery(requestBody);
+            logger.info('[Kiro] Handling native Claude web search request: ' + (query || '(empty query)'));
+            const searchOutcome = await this._performWebSearch(query);
+            const results = searchOutcome.results || [];
+            const content = buildClaudeWebSearchContent(query, results);
+            const inputTokens = this.estimateInputTokens(requestBody);
+            const events = this.buildClaudeResponse(content, true, 'assistant', model, null, inputTokens);
+            for (const event of events) {
+                yield event;
+            }
+            return;
+        }
+
         const finalModel = MODEL_MAPPING[model] ? model : model;
         logger.info(`[Kiro] Calling generateContentStream with model: ${finalModel} (real streaming)`);
 

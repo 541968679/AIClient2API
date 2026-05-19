@@ -816,6 +816,7 @@ export class ProviderPoolManager {
                         providerConfig.errorCount = existing.config.errorCount;
                         providerConfig.lastErrorTime = existing.config.lastErrorTime;
                         providerConfig.lastErrorMessage = existing.config.lastErrorMessage;
+                        providerConfig.scheduledRecoveryTime = existing.config.scheduledRecoveryTime || null;
                     } else {
                         // 新增节点或默认初始化
                         providerConfig.lastUsed = providerConfig.lastUsed || null;
@@ -841,6 +842,7 @@ export class ProviderPoolManager {
                     providerConfig.lastHealthCheckTime = providerConfig.lastHealthCheckTime || null;
                     providerConfig.lastHealthCheckModel = providerConfig.lastHealthCheckModel || null;
                     providerConfig.lastErrorMessage = providerConfig.lastErrorMessage || null;
+                    providerConfig.scheduledRecoveryTime = providerConfig.scheduledRecoveryTime || null;
                     providerConfig.customName = providerConfig.customName || null;
 
                     this.providerStatus[providerType].push({
@@ -1612,6 +1614,7 @@ export class ProviderPoolManager {
             if (errorMessage) {
                 provider.config.lastErrorMessage = errorMessage;
             }
+            provider.config.scheduledRecoveryTime = null;
 
             if (this.maxErrorCount > 0 && provider.config.errorCount >= this.maxErrorCount) {
                 provider.config.isHealthy = false;
@@ -1654,6 +1657,7 @@ export class ProviderPoolManager {
             if (errorMessage) {
                 provider.config.lastErrorMessage = errorMessage;
             }
+            provider.config.scheduledRecoveryTime = null;
 
             // 健康状态变化日志
             if (wasHealthy) {
@@ -1700,6 +1704,7 @@ export class ProviderPoolManager {
                 this._log('warn', `Marked provider as unhealthy with recovery time: ${providerConfig.uuid} for type ${providerType}. Recovery at: ${recoveryDate.toISOString()}. Reason: ${errorMessage || 'Quota exhausted'}`);
                 this._scheduleRecoveryCheck(providerType, provider.config);
             } else {
+                provider.config.scheduledRecoveryTime = null;
                 this._log('warn', `Marked provider as unhealthy: ${providerConfig.uuid} for type ${providerType}. Reason: ${errorMessage || 'Quota exhausted'}`);
             }
 
@@ -1805,6 +1810,7 @@ export class ProviderPoolManager {
             provider.config.isHealthy = true;
             provider.config.lastErrorTime = null;
             provider.config.lastErrorMessage = null;
+            provider.config.scheduledRecoveryTime = null;
             provider.config._lastSelectionSeq = 0;
             this._log('info', `Reset provider counters: ${provider.config.uuid} for type ${providerType}`);
             
@@ -2009,11 +2015,31 @@ export class ProviderPoolManager {
         const provider = this._findProvider(providerType, providerConfig.uuid);
         if (!provider || provider.config.isHealthy || provider.config.isDisabled) return;
 
+        const broadcastRecoveryUpdate = () => {
+            const payload = {
+                action: 'recovery_health_check',
+                providerType,
+                providerUuid: provider.config.uuid,
+                providerConfig: {
+                    uuid: provider.config.uuid,
+                    customName: provider.config.customName || null,
+                    isHealthy: provider.config.isHealthy,
+                    lastErrorTime: provider.config.lastErrorTime || null,
+                    lastErrorMessage: provider.config.lastErrorMessage || null,
+                    scheduledRecoveryTime: provider.config.scheduledRecoveryTime || null
+                },
+                timestamp: new Date().toISOString()
+            };
+            broadcastEvent('config_update', payload);
+            broadcastEvent('provider_update', payload);
+        };
+
         this._log('info', `Scheduled recovery time reached for ${provider.config.uuid} (${providerType}); running health check before rejoining pool.`);
         const result = await this._checkProviderHealth(providerType, provider.config);
 
         if (result.success) {
             this.markProviderHealthy(providerType, provider.config, true, result.modelName);
+            broadcastRecoveryUpdate();
             this._log('info', `Recovery health check passed for ${provider.config.uuid} (${providerType}); provider restored.`);
             return;
         }
@@ -2035,6 +2061,7 @@ export class ProviderPoolManager {
         if (provider.config.scheduledRecoveryTime) {
             this._scheduleRecoveryCheck(providerType, provider.config);
         }
+        broadcastRecoveryUpdate();
         this._log('warn', `Recovery health check failed for ${provider.config.uuid} (${providerType}); provider remains unhealthy. Reason: ${provider.config.lastErrorMessage}`);
     }
 

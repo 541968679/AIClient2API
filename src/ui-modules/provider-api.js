@@ -412,7 +412,12 @@ export async function handleGetProviderType(req, res, currentConfig, providerPoo
     let providerPools = {};
     const filePath = currentConfig.PROVIDER_POOLS_FILE_PATH || 'configs/provider_pools.json';
     try {
-        if (providerPoolManager && providerPoolManager.providerPools) {
+        const runtimeProviders = providerPoolManager?.providerStatus?.[providerType];
+        if (Array.isArray(runtimeProviders) && runtimeProviders.length > 0) {
+            providerPools[providerType] = runtimeProviders
+                .map(providerStatus => providerStatus.config)
+                .filter(Boolean);
+        } else if (providerPoolManager && providerPoolManager.providerPools) {
             providerPools = providerPoolManager.providerPools;
         } else if (filePath && existsSync(filePath)) {
             const poolsData = JSON.parse(readFileSync(filePath, 'utf-8'));

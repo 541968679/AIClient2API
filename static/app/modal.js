@@ -24,6 +24,7 @@ let kiroUsageRefreshRunId = 0;
 let kiroHealthCheckingUuids = new Set();
 let kiroHealthCheckProgress = null;
 let kiroHealthCheckRunId = 0;
+let kiroRecoveryCountdownTimer = null;
 
 function usesManagedModelList(providerType = '') {
     return Array.from(MANAGED_MODEL_LIST_PROVIDERS).some(baseType =>
@@ -751,6 +752,68 @@ function renderKiroHealthCheckProgress() {
     return renderKiroProgressPanel(kiroHealthCheckProgress, 'modal.provider.kiroConsole.health');
 }
 
+function getKiroRecoveryTime(provider = {}) {
+    if (provider.isHealthy || provider.isDisabled || !provider.scheduledRecoveryTime) {
+        return null;
+    }
+
+    const timestamp = new Date(provider.scheduledRecoveryTime).getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatKiroRecoveryCountdown(recoveryTime) {
+    if (!Number.isFinite(recoveryTime)) {
+        return '';
+    }
+
+    const remainingMs = recoveryTime - Date.now();
+    if (remainingMs <= 0) {
+        return t('modal.provider.kiroConsole.recovery.checkingSoon');
+    }
+
+    const totalSeconds = Math.ceil(remainingMs / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    const timeText = minutes > 0
+        ? `${minutes}:${String(seconds).padStart(2, '0')}`
+        : `${seconds}s`;
+
+    return t('modal.provider.kiroConsole.recovery.countdown', { time: timeText });
+}
+
+function updateKiroRecoveryCountdowns() {
+    const nodes = document.querySelectorAll('.kiro-recovery-countdown[data-recovery-time]');
+    nodes.forEach(node => {
+        const recoveryTime = Number(node.dataset.recoveryTime);
+        const label = node.querySelector('.kiro-status-label');
+        if (label) {
+            label.textContent = formatKiroRecoveryCountdown(recoveryTime);
+        }
+    });
+}
+
+function stopKiroRecoveryCountdownTimer() {
+    if (kiroRecoveryCountdownTimer) {
+        clearInterval(kiroRecoveryCountdownTimer);
+        kiroRecoveryCountdownTimer = null;
+    }
+}
+
+function syncKiroRecoveryCountdownTimer() {
+    stopKiroRecoveryCountdownTimer();
+    if (currentProviderType !== 'claude-kiro-oauth') {
+        return;
+    }
+
+    const hasCountdown = currentProviders.some(provider => getKiroRecoveryTime(provider));
+    if (!hasCountdown) {
+        return;
+    }
+
+    updateKiroRecoveryCountdowns();
+    kiroRecoveryCountdownTimer = setInterval(updateKiroRecoveryCountdowns, 1000);
+}
+
 function renderKiroUsageCell(provider) {
     const summary = getKiroUsageSummary(provider);
     if (summary.status === 'loading') {
@@ -839,6 +902,7 @@ function getKiroSelectedProviders() {
 
 function getKiroProviderBadges(provider) {
     const badges = [];
+    const recoveryTime = getKiroRecoveryTime(provider);
     if (kiroHealthCheckingUuids.has(provider.uuid)) {
         badges.push({
             className: 'checking',
@@ -867,6 +931,15 @@ function getKiroProviderBadges(provider) {
         });
     }
 
+    if (recoveryTime) {
+        badges.push({
+            className: 'cooldown',
+            icon: 'fas fa-hourglass-half',
+            label: formatKiroRecoveryCountdown(recoveryTime),
+            recoveryTime
+        });
+    }
+
     if (provider.needsRefresh) {
         badges.push({
             className: 'refresh',
@@ -876,9 +949,9 @@ function getKiroProviderBadges(provider) {
     }
 
     return badges.map(badge => `
-        <span class="kiro-status-badge ${badge.className}">
+        <span class="kiro-status-badge ${badge.className}${badge.recoveryTime ? ' kiro-recovery-countdown' : ''}"${badge.recoveryTime ? ` data-recovery-time="${badge.recoveryTime}"` : ''}>
             <i class="${badge.icon}"></i>
-            ${escapeHtml(badge.label)}
+            <span class="kiro-status-label">${escapeHtml(badge.label)}</span>
         </span>
     `).join('');
 }
@@ -1290,6 +1363,7 @@ function rerenderKiroProviderTable() {
         providerList.innerHTML = renderProviderListPaginated(getFilteredProviders(), currentPage);
     }
     updateKiroSelectionUi();
+    syncKiroRecoveryCountdownTimer();
 }
 
 async function refreshKiroUsage(forceRefresh = false, targetUuids = null) {
@@ -1910,6 +1984,7 @@ function renderKiroProviderSummaryActions(providerType) {
 function showProviderManagerModal(data, initialSearchTerm = '') {
     const { providerType, providers, totalCount, healthyCount } = data;
     const isKiroProvider = providerType === 'claude-kiro-oauth';
+    stopKiroRecoveryCountdownTimer();
     
     // 保存当前数据用于分页
     currentProviders = providers;
@@ -2008,6 +2083,7 @@ function showProviderManagerModal(data, initialSearchTerm = '') {
     window.goToProviderPage(1);
     if (isKiroProvider) {
         refreshKiroUsage(false);
+        syncKiroRecoveryCountdownTimer();
     }
 }
 
@@ -2159,6 +2235,7 @@ function goToProviderPage(page) {
     
     // 如果已缓存模型列表，直接使用
     if (currentProviderType === 'claude-kiro-oauth') {
+        syncKiroRecoveryCountdownTimer();
         return;
     }
 
@@ -2249,8 +2326,8 @@ function addModalEventListeners(modal) {
     // ESC键关闭模态框
     const handleEscKey = (event) => {
         if (event.key === 'Escape') {
+            modal.cleanup?.();
             modal.remove();
-            document.removeEventListener('keydown', handleEscKey);
         }
     };
     
@@ -2269,8 +2346,8 @@ function addModalEventListeners(modal) {
                 // showToast(t('common.warning'), '请先保存或取消添加操作', 'warning');
                 return;
             }
+            modal.cleanup?.();
             modal.remove();
-            document.removeEventListener('keydown', handleEscKey);
         }
     };
     
@@ -2354,6 +2431,7 @@ function addModalEventListeners(modal) {
             modalContent.removeEventListener('click', handlePasswordToggleClick);
             modalContent.removeEventListener('click', handleUploadButtonClick);
         }
+        stopKiroRecoveryCountdownTimer();
     };
 }
 
@@ -3105,6 +3183,7 @@ async function refreshProviderConfig(providerType) {
                 }
 
                 updateKiroSelectionUi();
+                syncKiroRecoveryCountdownTimer();
                 return;
             }
             

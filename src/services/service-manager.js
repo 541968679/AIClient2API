@@ -676,6 +676,7 @@ export async function getProviderStatus(config, options = {}) {
         'isDisabled',
         'lastErrorTime',
         'lastErrorMessage',
+        'scheduledRecoveryTime',
         'needsRefresh'
     ];
     // identify 字段映射表

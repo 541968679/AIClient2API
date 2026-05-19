@@ -1185,6 +1185,14 @@
 .kiro-status-badge.disabled { color: var(--text-secondary); background: var(--bg-tertiary); border: 1px solid var(--border-color); }
 .kiro-status-badge.refresh { color: var(--warning-text); background: var(--warning-bg-light); border: 1px solid var(--warning-border); }
 .kiro-status-badge.checking { color: var(--primary-color); background: var(--primary-10); border: 1px solid var(--primary-20); }
+.kiro-status-badge.cooldown { color: var(--danger-text); background: var(--danger-bg); border: 1px solid var(--danger-color); }
+
+.kiro-status-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 .kiro-error-snippet {
     display: -webkit-box;

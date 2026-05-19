@@ -573,6 +573,25 @@ async function exportKiroRefreshTokens(providerType, healthyOnly = false) {
     }
 }
 
+async function updateKiroStableNames(providerType) {
+    if (!confirm(t('modal.provider.updateKiroNamesConfirm', { type: providerType }))) {
+        return;
+    }
+
+    try {
+        const result = await window.apiClient.post(
+            `/providers/${encodeURIComponent(providerType)}/update-stable-names`,
+            { force: true }
+        );
+        await window.apiClient.post('/reload-config');
+        await refreshProviderConfig(providerType);
+        showToast(t('common.success'), t('modal.provider.updateKiroNames.success', result), 'success');
+    } catch (error) {
+        console.error('Update Kiro stable names failed:', error);
+        showToast(t('common.error'), t('modal.provider.updateKiroNames.failed') + ': ' + error.message, 'error');
+    }
+}
+
 async function autoAssignProviderProxies(providerType) {
     if (!confirm(t('proxies.autoAssignConfirm', { type: providerType }))) {
         return;
@@ -712,6 +731,9 @@ function showProviderManagerModal(data, initialSearchTerm = '') {
                 </button>
                 <button class="btn btn-info" onclick="window.performHealthCheckAll('${providerType}')" title="${t('modal.provider.healthCheckAllTitle')}">
                     <i class="fas fa-heartbeat"></i> <span data-i18n="modal.provider.healthCheckAll">${t('modal.provider.healthCheckAll')}</span>
+                </button>
+                <button class="btn btn-info" onclick="window.updateKiroStableNames('${providerType}')" title="${t('modal.provider.updateKiroNamesTitle')}">
+                    <i class="fas fa-signature"></i> <span data-i18n="modal.provider.updateKiroNames">${t('modal.provider.updateKiroNames')}</span>
                 </button>
                 <button class="btn btn-info" onclick="window.exportKiroRefreshTokens('${providerType}', false)" title="${t('modal.provider.exportRtAllTitle')}">
                     <i class="fas fa-download"></i> <span data-i18n="modal.provider.exportRtAll">${t('modal.provider.exportRtAll')}</span>
@@ -2506,6 +2528,7 @@ export {
     performHealthCheck,
     performHealthCheckAll,
     exportKiroRefreshTokens,
+    updateKiroStableNames,
     autoAssignProviderProxies,
     deleteUnhealthyProviders,
     refreshUnhealthyUuids,
@@ -2531,6 +2554,7 @@ window.resetAllProvidersHealth = resetAllProvidersHealth;
 window.performHealthCheck = performHealthCheck;
 window.performHealthCheckAll = performHealthCheckAll;
 window.exportKiroRefreshTokens = exportKiroRefreshTokens;
+window.updateKiroStableNames = updateKiroStableNames;
 window.autoAssignProviderProxies = autoAssignProviderProxies;
 window.performSingleHealthCheck = performSingleHealthCheck;
 window.deleteUnhealthyProviders = deleteUnhealthyProviders;

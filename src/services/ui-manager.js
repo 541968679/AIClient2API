@@ -231,6 +231,13 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
         return await providerApi.handleExportRefreshTokens(req, res, currentConfig, providerPoolManager, providerType);
     }
 
+    // Update stable account names for OAuth providers that support it
+    const updateStableNamesMatch = pathParam.match(/^\/api\/providers\/([^\/]+)\/update-stable-names$/);
+    if (method === 'POST' && updateStableNamesMatch) {
+        const providerType = decodeURIComponent(updateStableNamesMatch[1]);
+        return await providerApi.handleUpdateStableProviderNames(req, res, currentConfig, providerPoolManager, providerType);
+    }
+
     // Detect available models for a specific provider node
     const detectModelsMatch = pathParam.match(/^\/api\/providers\/([^\/]+)\/([^\/]+)\/detect-models$/);
     if (method === 'POST' && detectModelsMatch) {

@@ -20,6 +20,7 @@ import {
     pickProxyFromPool,
     sanitizeProxy
 } from '../utils/proxy-registry.js';
+import { createKiroAccountIdentity } from '../utils/account-fingerprint.js';
 
 const KIRO_PROVIDER_TYPE = 'claude-kiro-oauth';
 
@@ -1642,6 +1643,155 @@ export async function handleExportRefreshTokens(req, res, currentConfig, provide
         writeJson(res, 500, { error: { message: error.message } });
         return true;
     }
+}
+
+export async function handleUpdateStableProviderNames(req, res, currentConfig, providerPoolManager, providerType) {
+    const filePath = getProviderPoolsFilePath(currentConfig);
+
+    return withFileLock(filePath, async () => {
+        try {
+            if (providerType !== KIRO_PROVIDER_TYPE) {
+                writeJson(res, 400, { error: { message: 'Stable name update is only supported for claude-kiro-oauth' } });
+                return true;
+            }
+
+            const body = await getRequestBody(req);
+            const force = body?.force === true;
+            let providerPools = {};
+
+            if (existsSync(filePath)) {
+                providerPools = JSON.parse(readFileSync(filePath, 'utf-8'));
+            }
+
+            const providers = Array.isArray(providerPools[providerType]) ? providerPools[providerType] : [];
+            const updatedProviders = [];
+            const errors = [];
+            let updatedCount = 0;
+            let skippedCount = 0;
+            let errorCount = 0;
+
+            for (const provider of providers) {
+                const uuid = provider?.uuid || null;
+
+                if (!provider || typeof provider !== 'object') {
+                    skippedCount++;
+                    continue;
+                }
+
+                const fullPath = resolveConfigFilePath(provider.KIRO_OAUTH_CREDS_FILE_PATH);
+                if (!fullPath) {
+                    errorCount++;
+                    errors.push({ uuid, error: 'Missing KIRO_OAUTH_CREDS_FILE_PATH' });
+                    continue;
+                }
+
+                if (!isPathInConfigsDirectory(fullPath)) {
+                    errorCount++;
+                    errors.push({ uuid, path: provider.KIRO_OAUTH_CREDS_FILE_PATH, error: 'Path is outside configs directory' });
+                    continue;
+                }
+
+                try {
+                    const rawContent = await fs.readFile(fullPath, 'utf-8');
+                    const credentials = JSON.parse(rawContent);
+                    const refreshToken = credentials.refreshToken || credentials.refresh_token;
+                    const identity = createKiroAccountIdentity(refreshToken);
+
+                    if (!identity.accountName || !identity.accountFingerprint) {
+                        skippedCount++;
+                        continue;
+                    }
+
+                    const oldName = provider.customName || null;
+                    const oldFingerprint = provider.accountFingerprint || null;
+
+                    if (!force && oldName) {
+                        if (!oldFingerprint) {
+                            provider.accountFingerprint = identity.accountFingerprint;
+                            updatedCount++;
+                            updatedProviders.push({
+                                uuid,
+                                oldName,
+                                newName: oldName,
+                                accountFingerprint: identity.accountFingerprint
+                            });
+                        } else {
+                            skippedCount++;
+                        }
+                        continue;
+                    }
+
+                    provider.customName = identity.accountName;
+                    provider.accountFingerprint = identity.accountFingerprint;
+
+                    if (oldName !== provider.customName || oldFingerprint !== provider.accountFingerprint) {
+                        updatedCount++;
+                        updatedProviders.push({
+                            uuid,
+                            oldName,
+                            newName: provider.customName,
+                            accountFingerprint: provider.accountFingerprint
+                        });
+                    } else {
+                        skippedCount++;
+                    }
+                } catch (error) {
+                    errorCount++;
+                    errors.push({ uuid, path: provider.KIRO_OAUTH_CREDS_FILE_PATH, error: error.message });
+                }
+            }
+
+            await atomicWriteFile(filePath, JSON.stringify(providerPools, null, 2), 'utf-8');
+            logger.info(`[UI API] Updated stable Kiro account names: updated=${updatedCount}, skipped=${skippedCount}, errors=${errorCount}`);
+
+            if (providerPoolManager) {
+                providerPoolManager.providerPools = providerPools;
+                providerPoolManager.initializeProviderStatus();
+            }
+
+            if (currentConfig) {
+                currentConfig.providerPools = providerPools;
+            }
+
+            broadcastEvent('config_update', {
+                action: 'update_stable_names',
+                filePath,
+                providerType,
+                updatedCount,
+                skippedCount,
+                errorCount,
+                timestamp: new Date().toISOString()
+            });
+
+            broadcastEvent('provider_update', {
+                action: 'update_stable_names',
+                providerType,
+                updatedCount,
+                skippedCount,
+                errorCount,
+                timestamp: new Date().toISOString()
+            });
+
+            writeJson(res, 200, {
+                success: true,
+                providerType,
+                updatedCount,
+                skippedCount,
+                errorCount,
+                totalCount: providers.length,
+                updatedProviders,
+                errors
+            });
+            return true;
+        } catch (error) {
+            logger.error('[UI API] Update stable provider names error:', error);
+            writeJson(res, 500, { error: { message: error.message } });
+            return true;
+        }
+    }).catch(error => {
+        writeJson(res, 500, { error: { message: 'File operation failed: ' + error.message } });
+        return true;
+    });
 }
 
 export async function handleSingleProviderHealthCheck(req, res, currentConfig, providerPoolManager, providerType, providerUuid) {

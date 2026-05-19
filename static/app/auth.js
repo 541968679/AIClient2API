@@ -103,6 +103,14 @@ class ApiClient {
         window.location.href = '/login.html';
     }
 
+    isUiAuthExpired(response, data) {
+        if (response.status !== 401 || !data || typeof data !== 'object') {
+            return false;
+        }
+
+        return data.error?.code === 'UNAUTHORIZED' || data.code === 'UNAUTHORIZED';
+    }
+
     /**
      * 通用API请求方法
      */
@@ -121,18 +129,17 @@ class ApiClient {
         try {
             const response = await fetch(url, config);
             
-            // 如果是401错误，重定向到登录页
-            if (response.status === 401) {
-                this.handleUnauthorized();
-                throw new Error(t('common.unauthorized'));
-            }
-
             const contentType = response.headers.get('content-type');
             let data;
             if (contentType && contentType.includes('application/json')) {
                 data = await response.json();
             } else {
                 data = await response.text();
+            }
+
+            if (this.isUiAuthExpired(response, data)) {
+                this.handleUnauthorized();
+                throw new Error(t('common.unauthorized'));
             }
 
             // 如果响应状态码不是 2xx，抛出错误
@@ -244,18 +251,17 @@ class ApiClient {
         try {
             const response = await fetch(url, config);
             
-            // 如果是401错误，重定向到登录页
-            if (response.status === 401) {
-                this.handleUnauthorized();
-                throw new Error(t('common.unauthorized'));
-            }
-
             const contentType = response.headers.get('content-type');
             let data;
             if (contentType && contentType.includes('application/json')) {
                 data = await response.json();
             } else {
                 data = await response.text();
+            }
+
+            if (this.isUiAuthExpired(response, data)) {
+                this.handleUnauthorized();
+                throw new Error(t('common.unauthorized'));
             }
 
             // 如果响应状态码不是 2xx，抛出错误

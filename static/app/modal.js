@@ -223,6 +223,43 @@ function renderProxyBindingSection(provider = {}) {
     `;
 }
 
+function getProviderProxySummary(provider = {}) {
+    const proxyId = provider.proxyId || provider.proxy_id || '';
+    const proxy = provider.proxy;
+    if (proxy) {
+        const count = proxy.assignedCount !== undefined ? ` (${proxy.assignedCount})` : '';
+        const status = proxy.enabled === false ? ` - ${t('proxies.disabled')}` : '';
+        return {
+            label: proxy.name || proxy.id || proxyId,
+            title: `${proxy.url || proxy.localUrl || proxy.host || proxyId}${count}${status}`,
+            bound: true
+        };
+    }
+    if (proxyId) {
+        return {
+            label: proxyId,
+            title: proxyId,
+            bound: true
+        };
+    }
+    return {
+        label: t('modal.provider.noProxy'),
+        title: t('modal.provider.noProxy'),
+        bound: false
+    };
+}
+
+function renderProviderProxySummary(provider = {}) {
+    const summary = getProviderProxySummary(provider);
+    return `
+        <span class="provider-proxy-summary ${summary.bound ? 'bound' : 'unbound'}" title="${escapeHtml(summary.title)}">
+            <i class="fas fa-route"></i>
+            <span data-i18n="modal.provider.proxy">${escapeHtml(t('modal.provider.proxy'))}</span>:
+            <span class="provider-proxy-name">${escapeHtml(summary.label)}</span>
+        </span>
+    `;
+}
+
 function closeSupportedModelsPicker(overlay) {
     if (!overlay) return;
 
@@ -445,6 +482,125 @@ async function openSupportedModelsPicker(providerType, uuid, event) {
     }
 }
 
+async function performHealthCheckAll(providerType) {
+    if (!confirm(t('modal.provider.healthCheckAllConfirm', { type: providerType }))) {
+        return;
+    }
+
+    try {
+        showToast(t('common.info'), t('modal.provider.healthCheckAllRunning'), 'info');
+
+        const response = await window.apiClient.post(
+            `/providers/${encodeURIComponent(providerType)}/health-check-all`,
+            {}
+        );
+
+        if (response.success) {
+            const successCount = response.successCount || 0;
+            const failCount = response.failCount || 0;
+            const rateLimitCount = response.rateLimitCount || 0;
+            const skippedCount = response.skippedCount || 0;
+            const message = t('modal.provider.healthCheckAll.complete', {
+                success: successCount,
+                fail: failCount,
+                rateLimited: rateLimitCount,
+                skipped: skippedCount
+            });
+
+            showToast(t('common.info'), message, failCount > 0 ? 'warning' : 'success');
+            await window.apiClient.post('/reload-config');
+            await refreshProviderConfig(providerType);
+        } else {
+            showToast(t('common.error'), t('modal.provider.healthCheckAll.failed'), 'error');
+        }
+    } catch (error) {
+        console.error('Full health check failed:', error);
+        showToast(t('common.error'), t('modal.provider.healthCheckAll.failed') + ': ' + error.message, 'error');
+    }
+}
+
+function getDownloadFilename(response, fallbackName) {
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match) {
+        return decodeURIComponent(utf8Match[1].replace(/"/g, ''));
+    }
+
+    const match = disposition.match(/filename="?([^"]+)"?/i);
+    return match ? match[1] : fallbackName;
+}
+
+async function downloadResponseBlob(response, fallbackName) {
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = getDownloadFilename(response, fallbackName);
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+}
+
+async function exportKiroRefreshTokens(providerType, healthyOnly = false) {
+    try {
+        const params = new URLSearchParams({
+            healthyOnly: healthyOnly ? 'true' : 'false',
+            format: 'txt'
+        });
+        const response = await fetch(`/api/providers/${encodeURIComponent(providerType)}/export-refresh-tokens?${params.toString()}`, {
+            method: 'GET',
+            headers: window.apiClient ? window.apiClient.getAuthHeaders() : {}
+        });
+
+        if (!response.ok) {
+            let message = `HTTP ${response.status}`;
+            try {
+                const errorData = await response.json();
+                message = errorData.error?.message || message;
+            } catch {}
+            throw new Error(message);
+        }
+
+        const tokenCount = Number(response.headers.get('X-Token-Count') || 0);
+        await downloadResponseBlob(response, healthyOnly ? 'kiro-refresh-tokens-healthy.txt' : 'kiro-refresh-tokens-all.txt');
+
+        const successKey = tokenCount > 0 ? 'modal.provider.exportRt.success' : 'modal.provider.exportRt.noTokens';
+        showToast(t('common.success'), t(successKey, { count: tokenCount }), 'success');
+    } catch (error) {
+        console.error('Export Kiro refresh tokens failed:', error);
+        showToast(t('common.error'), t('modal.provider.exportRt.failed') + ': ' + error.message, 'error');
+    }
+}
+
+async function autoAssignProviderProxies(providerType) {
+    if (!confirm(t('proxies.autoAssignConfirm', { type: providerType }))) {
+        return;
+    }
+
+    try {
+        const result = await window.apiClient.post('/proxies/auto-assign', {
+            providerTypes: [providerType]
+        });
+        await window.apiClient.post('/reload-config');
+        cachedProxyOptions = [];
+        await loadProxyOptions(true);
+        await refreshProviderConfig(providerType);
+        showToast(t('common.success'), t('proxies.autoAssignResult', result), 'success');
+    } catch (error) {
+        console.error('Auto-assign provider proxies failed:', error);
+        showToast(t('common.error'), error.message, 'error');
+    }
+}
+
+function promoteKiroSummarySecondaryButtons(summaryActions) {
+    if (!summaryActions) return;
+    summaryActions.querySelectorAll('.btn-secondary').forEach(button => {
+        button.classList.remove('btn-secondary');
+        button.classList.add('btn-info');
+    });
+}
+
 /**
  * 显示提供商管理模态框
  * @param {Object} data - 提供商数据
@@ -452,6 +608,7 @@ async function openSupportedModelsPicker(providerType, uuid, event) {
  */
 function showProviderManagerModal(data, initialSearchTerm = '') {
     const { providerType, providers, totalCount, healthyCount } = data;
+    const isKiroProvider = providerType === 'claude-kiro-oauth';
     
     // 保存当前数据用于分页
     currentProviders = providers;
@@ -545,6 +702,27 @@ function showProviderManagerModal(data, initialSearchTerm = '') {
     
     // 添加到页面
     document.body.appendChild(modal);
+    if (isKiroProvider) {
+        const summaryActions = modal.querySelector('.provider-summary-actions');
+        const refreshButton = summaryActions?.querySelector('[onclick^="window.refreshUnhealthyUuids"]');
+        if (summaryActions && refreshButton) {
+            refreshButton.insertAdjacentHTML('beforebegin', `
+                <button class="btn btn-info" onclick="window.autoAssignProviderProxies('${providerType}')" title="${t('proxies.autoAssignTitle')}">
+                    <i class="fas fa-random"></i> <span data-i18n="proxies.autoAssign">${t('proxies.autoAssign')}</span>
+                </button>
+                <button class="btn btn-info" onclick="window.performHealthCheckAll('${providerType}')" title="${t('modal.provider.healthCheckAllTitle')}">
+                    <i class="fas fa-heartbeat"></i> <span data-i18n="modal.provider.healthCheckAll">${t('modal.provider.healthCheckAll')}</span>
+                </button>
+                <button class="btn btn-info" onclick="window.exportKiroRefreshTokens('${providerType}', false)" title="${t('modal.provider.exportRtAllTitle')}">
+                    <i class="fas fa-download"></i> <span data-i18n="modal.provider.exportRtAll">${t('modal.provider.exportRtAll')}</span>
+                </button>
+                <button class="btn btn-info" onclick="window.exportKiroRefreshTokens('${providerType}', true)" title="${t('modal.provider.exportRtHealthyTitle')}">
+                    <i class="fas fa-file-medical-alt"></i> <span data-i18n="modal.provider.exportRtHealthy">${t('modal.provider.exportRtHealthy')}</span>
+                </button>
+            `);
+            promoteKiroSummarySecondaryButtons(summaryActions);
+        }
+    }
     
     // 添加模态框事件监听
     addModalEventListeners(modal);
@@ -973,6 +1151,9 @@ function renderProviderDetailList(providers) {
                                 <span data-i18n="modal.provider.checkModel">检测模型</span>: ${lastHealthCheckModel}
                             </span>
                         </div>
+                        <div class="provider-proxy-meta">
+                            ${renderProviderProxySummary(provider)}
+                        </div>
                         ${errorInfoHtml}
                     </div>
                     <div class="provider-actions-group">
@@ -1037,6 +1218,9 @@ function renderProviderCardList(providers) {
                         <i class="fas fa-exclamation-circle"></i>
                         <span>${provider.errorCount || 0}</span>
                     </div>
+                </div>
+                <div class="card-proxy-summary">
+                    ${renderProviderProxySummary(provider)}
                 </div>
                 <div class="card-actions" onclick="event.stopPropagation()">
                     <button class="card-action-btn ${toggleButtonClass}" onclick="window.toggleProviderStatus('${provider.uuid}', event)" title="${toggleButtonText}">
@@ -2320,6 +2504,9 @@ export {
     toggleProviderStatus,
     resetAllProvidersHealth,
     performHealthCheck,
+    performHealthCheckAll,
+    exportKiroRefreshTokens,
+    autoAssignProviderProxies,
     deleteUnhealthyProviders,
     refreshUnhealthyUuids,
     openSupportedModelsPicker,
@@ -2342,6 +2529,9 @@ window.addProvider = addProvider;
 window.toggleProviderStatus = toggleProviderStatus;
 window.resetAllProvidersHealth = resetAllProvidersHealth;
 window.performHealthCheck = performHealthCheck;
+window.performHealthCheckAll = performHealthCheckAll;
+window.exportKiroRefreshTokens = exportKiroRefreshTokens;
+window.autoAssignProviderProxies = autoAssignProviderProxies;
 window.performSingleHealthCheck = performSingleHealthCheck;
 window.deleteUnhealthyProviders = deleteUnhealthyProviders;
 window.refreshUnhealthyUuids = refreshUnhealthyUuids;

@@ -217,6 +217,20 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
         return await providerApi.handleHealthCheck(req, res, currentConfig, providerPoolManager, providerType);
     }
 
+    // Perform health check for every provider node of a specific type
+    const healthCheckAllMatch = pathParam.match(/^\/api\/providers\/([^\/]+)\/health-check-all$/);
+    if (method === 'POST' && healthCheckAllMatch) {
+        const providerType = decodeURIComponent(healthCheckAllMatch[1]);
+        return await providerApi.handleHealthCheckAll(req, res, currentConfig, providerPoolManager, providerType);
+    }
+
+    // Export refresh tokens for OAuth providers that support it
+    const exportRefreshTokensMatch = pathParam.match(/^\/api\/providers\/([^\/]+)\/export-refresh-tokens$/);
+    if (method === 'GET' && exportRefreshTokensMatch) {
+        const providerType = decodeURIComponent(exportRefreshTokensMatch[1]);
+        return await providerApi.handleExportRefreshTokens(req, res, currentConfig, providerPoolManager, providerType);
+    }
+
     // Detect available models for a specific provider node
     const detectModelsMatch = pathParam.match(/^\/api\/providers\/([^\/]+)\/([^\/]+)\/detect-models$/);
     if (method === 'POST' && detectModelsMatch) {

@@ -2,44 +2,44 @@
 <section id="proxies" class="section" aria-labelledby="proxies-title">
     <div class="section-header">
         <div>
-            <h2 id="proxies-title" data-i18n="proxies.title">代理管理</h2>
-            <p data-i18n="proxies.subtitle">管理可分配给 Provider 节点的 HTTP/SOCKS 代理和订阅转换节点。</p>
+            <h2 id="proxies-title" data-i18n="proxies.title">Proxy Management</h2>
+            <p data-i18n="proxies.subtitle">Manage HTTP/SOCKS proxies and subscription conversion nodes assigned to Provider nodes.</p>
         </div>
         <div class="header-actions">
             <button class="btn btn-secondary" id="refreshProxiesBtn">
                 <i class="fas fa-sync-alt"></i>
-                <span data-i18n="common.refresh">刷新</span>
+                <span data-i18n="common.refresh">Refresh</span>
             </button>
             <button class="btn btn-secondary" id="importProxiesBtn">
                 <i class="fas fa-file-import"></i>
-                <span data-i18n="proxies.import">批量导入</span>
+                <span data-i18n="proxies.import">Batch Import</span>
             </button>
             <button class="btn btn-secondary" id="importSubscriptionBtn">
                 <i class="fas fa-cloud-download-alt"></i>
-                <span data-i18n="proxies.importSubscription">导入订阅</span>
+                <span data-i18n="proxies.importSubscription">Import Subscription</span>
             </button>
             <button class="btn btn-primary" id="addProxyBtn">
                 <i class="fas fa-plus"></i>
-                <span data-i18n="proxies.add">添加代理</span>
+                <span data-i18n="proxies.add">Add Proxy</span>
             </button>
         </div>
     </div>
 
     <div class="proxies-summary-grid">
         <div class="proxies-summary-item">
-            <span data-i18n="proxies.total">代理总数</span>
+            <span data-i18n="proxies.total">Total Proxies</span>
             <strong id="proxiesTotalCount">0</strong>
         </div>
         <div class="proxies-summary-item">
-            <span data-i18n="proxies.poolEnabled">池中代理</span>
+            <span data-i18n="proxies.poolEnabled">Pool Proxies</span>
             <strong id="proxiesPoolCount">0</strong>
         </div>
         <div class="proxies-summary-item">
-            <span data-i18n="proxies.assigned">已绑定节点</span>
+            <span data-i18n="proxies.assigned">Assigned Nodes</span>
             <strong id="proxiesAssignedCount">0</strong>
         </div>
         <div class="proxies-summary-item">
-            <span data-i18n="proxies.subscriptionNodes">订阅节点</span>
+            <span data-i18n="proxies.subscriptionNodes">Subscription Nodes</span>
             <strong id="proxiesSubscriptionCount">0</strong>
         </div>
     </div>
@@ -47,15 +47,11 @@
     <div class="proxies-toolbar">
         <div class="search-input-wrapper">
             <i class="fas fa-search"></i>
-            <input id="proxySearchInput" type="search" data-i18n-placeholder="proxies.search" placeholder="搜索名称、地址、标签...">
+            <input id="proxySearchInput" type="search" data-i18n-placeholder="proxies.search" placeholder="Search name, address, tags...">
         </div>
-        <button class="btn btn-secondary" id="autoAssignAllProxiesBtn">
-            <i class="fas fa-random"></i>
-            <span data-i18n="proxies.autoAssign">自动分配未绑定节点</span>
-        </button>
         <button class="btn btn-secondary" id="generateSingBoxBtn">
             <i class="fas fa-code"></i>
-            <span data-i18n="proxies.singBox">生成 sing-box 配置</span>
+            <span data-i18n="proxies.singBox">Generate sing-box Config</span>
         </button>
     </div>
 
@@ -63,18 +59,18 @@
         <table class="proxies-table">
             <thead>
                 <tr>
-                    <th data-i18n="proxies.name">名称</th>
-                    <th data-i18n="proxies.protocol">协议</th>
-                    <th data-i18n="proxies.address">地址</th>
-                    <th data-i18n="proxies.status">状态</th>
-                    <th data-i18n="proxies.usage">占用</th>
-                    <th data-i18n="proxies.check">检测</th>
-                    <th data-i18n="common.actions">操作</th>
+                    <th data-i18n="proxies.name">Name</th>
+                    <th data-i18n="proxies.protocol">Protocol</th>
+                    <th data-i18n="proxies.address">Address</th>
+                    <th data-i18n="proxies.status">Status</th>
+                    <th data-i18n="proxies.usage">Usage</th>
+                    <th data-i18n="proxies.check">Check</th>
+                    <th data-i18n="common.actions">Actions</th>
                 </tr>
             </thead>
             <tbody id="proxiesTableBody">
                 <tr>
-                    <td colspan="7" class="proxies-empty" data-i18n="common.loading">加载中...</td>
+                    <td colspan="7" class="proxies-empty" data-i18n="common.loading">Loading...</td>
                 </tr>
             </tbody>
         </table>

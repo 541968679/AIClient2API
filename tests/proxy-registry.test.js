@@ -2,6 +2,7 @@ import {
     assignProxyToProviderConfig,
     countProxyAssignments,
     isRedactedProxyUrl,
+    parseProxyJsonPayload,
     parseProxyLine,
     parseSubscriptionContent,
     pickProxyFromPool
@@ -72,5 +73,63 @@ describe('proxy-registry', () => {
         expect(proxies[0].name).toBe('CDN-US-1');
         expect(proxies[0].localUrl).toBe('http://a2-proxy:11001');
         expect(proxies[0].upstreamType).toBe('vless');
+    });
+
+    test('parses sub2api proxy export JSON', () => {
+        const proxies = parseProxyJsonPayload({
+            type: 'sub2api-data',
+            version: 1,
+            exported_at: '2026-05-19T00:00:00Z',
+            proxies: [
+                {
+                    proxy_key: 'socks5|1.2.3.4|1080|user|pass',
+                    name: 'US socks',
+                    protocol: 'socks5',
+                    host: '1.2.3.4',
+                    port: 1080,
+                    username: 'user',
+                    password: 'pass',
+                    status: 'active'
+                }
+            ],
+            accounts: []
+        });
+
+        expect(proxies).toHaveLength(1);
+        expect(proxies[0].name).toBe('US socks');
+        expect(proxies[0].protocol).toBe('socks5');
+        expect(proxies[0].host).toBe('1.2.3.4');
+        expect(proxies[0].port).toBe(1080);
+        expect(proxies[0].username).toBe('user');
+        expect(proxies[0].password).toBe('pass');
+    });
+
+    test('parses wrapped proxy data JSON and A2 proxy registry JSON', () => {
+        const wrapped = parseProxyJsonPayload({
+            data: {
+                proxies: [
+                    { proxy_key: 'http|127.0.0.1|7890||', name: 'local' }
+                ]
+            }
+        });
+        expect(wrapped[0].protocol).toBe('http');
+        expect(wrapped[0].host).toBe('127.0.0.1');
+        expect(wrapped[0].port).toBe(7890);
+
+        const a2 = parseProxyJsonPayload({
+            proxies: [
+                {
+                    name: 'A2 proxy',
+                    protocol: 'https',
+                    host: 'proxy.example.com',
+                    port: '8443',
+                    enabled: true,
+                    poolEnabled: false
+                }
+            ]
+        });
+        expect(a2[0].name).toBe('A2 proxy');
+        expect(a2[0].protocol).toBe('https');
+        expect(a2[0].poolEnabled).toBe(false);
     });
 });

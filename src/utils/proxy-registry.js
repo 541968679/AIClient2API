@@ -37,6 +37,13 @@ function normalizePort(value) {
     return port;
 }
 
+function normalizeOptionalPort(value) {
+    if (value === undefined || value === null || value === '') {
+        return null;
+    }
+    return normalizePort(value);
+}
+
 function decodeMaybe(value = '') {
     try {
         return decodeURIComponent(value);
@@ -60,7 +67,7 @@ export function normalizeProxyRecord(raw = {}) {
         name: name || raw.host || raw.localUrl || raw.upstreamUrl || 'Proxy',
         protocol,
         host: raw.host || '',
-        port: raw.port ? normalizePort(raw.port) : null,
+        port: normalizeOptionalPort(raw.port),
         username: raw.username || '',
         password: raw.password || '',
         enabled,
@@ -71,7 +78,7 @@ export function normalizeProxyRecord(raw = {}) {
         upstreamUrl: raw.upstreamUrl || raw.upstream_url || '',
         localUrl: raw.localUrl || raw.local_url || '',
         localHost: raw.localHost || raw.local_host || '',
-        localPort: raw.localPort || raw.local_port || null,
+        localPort: normalizeOptionalPort(raw.localPort ?? raw.local_port),
         tags: Array.isArray(raw.tags) ? raw.tags : [],
         exitIp: raw.exitIp || raw.exit_ip || '',
         latencyMs: raw.latencyMs ?? raw.latency_ms ?? null,
@@ -235,6 +242,100 @@ export function parseProxyLine(line, defaults = {}) {
         throw new Error(`Unsupported proxy protocol: ${scheme}`);
     }
     return parsePlainProxy(trimmed, defaults);
+}
+
+function parseProxyKey(proxyKey = '') {
+    const parts = String(proxyKey).split('|');
+    if (parts.length < 3) {
+        return {};
+    }
+    return {
+        protocol: parts[0] || '',
+        host: parts[1] || '',
+        port: parts[2] || '',
+        username: parts[3] || '',
+        password: parts.slice(4).join('|') || ''
+    };
+}
+
+function getProxyItemUrl(item = {}) {
+    return item.url || item.proxyUrl || item.proxy_url || item.address || item.localUrl || item.local_url || '';
+}
+
+export function extractProxyItemsFromJsonPayload(payload) {
+    if (Array.isArray(payload)) {
+        return payload;
+    }
+    if (!payload || typeof payload !== 'object') {
+        throw new Error('Proxy JSON must be an array or an object containing a proxies array');
+    }
+    if (payload.data !== undefined) {
+        return extractProxyItemsFromJsonPayload(payload.data);
+    }
+    if (Array.isArray(payload.proxies)) {
+        return payload.proxies;
+    }
+    if (Array.isArray(payload.proxyList)) {
+        return payload.proxyList;
+    }
+    if (Array.isArray(payload.proxy_list)) {
+        return payload.proxy_list;
+    }
+    if (payload.proxy && typeof payload.proxy === 'object') {
+        return [payload.proxy];
+    }
+    throw new Error('Proxy JSON must contain a proxies array');
+}
+
+export function parseProxyImportItem(item, defaults = {}) {
+    if (typeof item === 'string') {
+        return parseProxyLine(item, defaults);
+    }
+    if (!item || typeof item !== 'object') {
+        throw new Error('Invalid proxy item');
+    }
+
+    const fromKey = parseProxyKey(item.proxyKey || item.proxy_key || '');
+    const merged = {
+        ...fromKey,
+        ...item,
+        protocol: item.protocol || fromKey.protocol || defaults.protocol || 'http',
+        host: item.host || item.server || fromKey.host || '',
+        port: item.port ?? item.server_port ?? item.serverPort ?? fromKey.port,
+        username: item.username ?? item.user ?? fromKey.username ?? '',
+        password: item.password ?? item.pass ?? fromKey.password ?? '',
+        name: item.name || item.remark || item.tag || defaults.name,
+        enabled: item.enabled ?? (item.status ? normalizeProxyStatusForImport(item.status) !== 'inactive' : defaults.enabled),
+        poolEnabled: item.poolEnabled ?? item.pool_enabled ?? defaults.poolEnabled,
+        tags: Array.isArray(item.tags) ? item.tags : (defaults.tags || [])
+    };
+
+    const url = getProxyItemUrl(item);
+    const hasStructuredAddress = merged.protocol && merged.host && merged.port;
+    if (url && !isRedactedProxyUrl(url) && !hasStructuredAddress) {
+        return parseProxyLine(url, merged);
+    }
+
+    if (!merged.host || !merged.port) {
+        throw new Error(`Invalid proxy item: missing host or port`);
+    }
+    if (!SUPPORTED_DIRECT_PROXY_PROTOCOLS.has(String(merged.protocol).toLowerCase())) {
+        throw new Error(`Unsupported direct proxy protocol: ${merged.protocol}`);
+    }
+
+    return normalizeProxyRecord(merged);
+}
+
+function normalizeProxyStatusForImport(status = '') {
+    const normalized = String(status).trim().toLowerCase();
+    if (normalized === 'disabled') return 'inactive';
+    return normalized;
+}
+
+export function parseProxyJsonPayload(payload, defaults = {}) {
+    return extractProxyItemsFromJsonPayload(payload)
+        .map((item, index) => parseProxyImportItem(item, { ...defaults, index }))
+        .filter(Boolean);
 }
 
 function decodeBase64URLSafe(input) {

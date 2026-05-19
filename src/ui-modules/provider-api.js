@@ -1327,15 +1327,14 @@ export async function handleHealthCheck(req, res, currentConfig, providerPoolMan
                 } else {
                     // 检查是否为认证错误（401/403），如果是则立即标记为不健康
                     const errorMessage = healthResult.errorMessage || 'Check failed';
-                    const isAuthError = /\b(401|403)\b/.test(errorMessage) ||
-                                       /\b(Unauthorized|Forbidden|AccessDenied|InvalidToken|ExpiredToken)\b/i.test(errorMessage);
-                    
-                    if (isAuthError) {
-                        providerPoolManager.markProviderUnhealthyImmediately(providerType, providerConfig, errorMessage);
-                        logger.info(`[UI API] Auth error detected for ${providerConfig.uuid}, immediately marked as unhealthy`);
-                    } else {
-                        providerPoolManager.markProviderUnhealthy(providerType, providerConfig, errorMessage);
-                    }
+                    const { isAuthError, isRateLimitError, recoveryTime } = markProviderAfterHealthCheckFailure(
+                        providerPoolManager,
+                        providerType,
+                        providerConfig,
+                        errorMessage,
+                        currentConfig,
+                        { rateLimitCooldown: providerType === KIRO_PROVIDER_TYPE }
+                    );
                     
                     providerStatus.config.lastHealthCheckTime = new Date().toISOString();
                     if (healthResult.modelName) {
@@ -1346,27 +1345,30 @@ export async function handleHealthCheck(req, res, currentConfig, providerPoolMan
                         success: false,
                         modelName: healthResult.modelName,
                         message: errorMessage,
-                        isAuthError: isAuthError
+                        isAuthError: isAuthError,
+                        isRateLimitError,
+                        recoveryTime: recoveryTime ? recoveryTime.toISOString() : null
                     });
                 }
             } catch (error) {
                 const errorMessage = error.message || 'Unknown error';
                 // 检查是否为认证错误（401/403），如果是则立即标记为不健康
-                const isAuthError = /\b(401|403)\b/.test(errorMessage) ||
-                                   /\b(Unauthorized|Forbidden|AccessDenied|InvalidToken|ExpiredToken)\b/i.test(errorMessage);
-                
-                if (isAuthError) {
-                    providerPoolManager.markProviderUnhealthyImmediately(providerType, providerConfig, errorMessage);
-                    logger.info(`[UI API] Auth error detected for ${providerConfig.uuid}, immediately marked as unhealthy`);
-                } else {
-                    providerPoolManager.markProviderUnhealthy(providerType, providerConfig, errorMessage);
-                }
+                const { isAuthError, isRateLimitError, recoveryTime } = markProviderAfterHealthCheckFailure(
+                    providerPoolManager,
+                    providerType,
+                    providerConfig,
+                    errorMessage,
+                    currentConfig,
+                    { rateLimitCooldown: providerType === KIRO_PROVIDER_TYPE }
+                );
                 
                 results.push({
                     uuid: providerConfig.uuid,
                     success: false,
                     message: errorMessage,
-                    isAuthError: isAuthError
+                    isAuthError: isAuthError,
+                    isRateLimitError,
+                    recoveryTime: recoveryTime ? recoveryTime.toISOString() : null
                 });
             }
         }
@@ -1431,6 +1433,217 @@ export async function handleHealthCheck(req, res, currentConfig, providerPoolMan
  * 快速链接配置文件到对应的提供商
  * 支持单个文件路径或文件路径数组
  */
+export async function handleHealthCheckAll(req, res, currentConfig, providerPoolManager, providerType) {
+    try {
+        if (!providerPoolManager) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'Provider pool manager not initialized' } }));
+            return true;
+        }
+
+        const providers = providerPoolManager.providerStatus[providerType] || [];
+        if (providers.length === 0) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'No providers found for this type' } }));
+            return true;
+        }
+
+        logger.info(`[UI API] Starting health check for all ${providers.length} providers in ${providerType}`);
+
+        const results = [];
+        let skippedCount = 0;
+
+        for (const providerStatus of providers) {
+            const providerConfig = providerStatus.config;
+            if (providerConfig.isDisabled) {
+                skippedCount++;
+                results.push({
+                    uuid: providerConfig.uuid,
+                    success: null,
+                    healthy: providerConfig.isHealthy === true,
+                    message: 'Skipped disabled provider',
+                    skipped: true
+                });
+                logger.info(`[UI API] Skipping health check for disabled provider: ${providerConfig.uuid}`);
+                continue;
+            }
+
+            const result = await runProviderHealthCheck(
+                providerPoolManager,
+                providerType,
+                providerStatus,
+                currentConfig,
+                { rateLimitCooldown: providerType === KIRO_PROVIDER_TYPE }
+            );
+            results.push(result);
+        }
+
+        const filePath = await persistProviderTypeStatus(currentConfig, providerPoolManager, providerType);
+        const successCount = results.filter(r => r.success === true).length;
+        const failCount = results.filter(r => r.success === false).length;
+        const rateLimitCount = results.filter(r => r.isRateLimitError === true).length;
+
+        logger.info(`[UI API] Full health check completed for ${providerType}: ${successCount} healthy, ${failCount} unhealthy, ${rateLimitCount} rate-limited, ${skippedCount} skipped`);
+
+        broadcastEvent('config_update', {
+            action: 'health_check_all',
+            filePath,
+            providerType,
+            results: results.map(r => ({ ...r, message: sanitizeProviderData({ message: r.message }).message })),
+            timestamp: new Date().toISOString()
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            success: true,
+            message: `Full health check completed: ${successCount} healthy, ${failCount} unhealthy, ${rateLimitCount} rate-limited, ${skippedCount} skipped`,
+            successCount,
+            failCount,
+            rateLimitCount,
+            skippedCount,
+            totalCount: providers.length,
+            checkedCount: results.length - skippedCount,
+            results
+        }));
+        return true;
+    } catch (error) {
+        logger.error('[UI API] Full health check error:', error);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: error.message } }));
+        return true;
+    }
+}
+
+function getProvidersForExport(providerPoolManager, currentConfig, providerType) {
+    const statusProviders = providerPoolManager?.providerStatus?.[providerType];
+    if (Array.isArray(statusProviders)) {
+        return statusProviders.map(providerStatus => providerStatus.config).filter(Boolean);
+    }
+
+    const pools = loadProviderPools(currentConfig, providerPoolManager);
+    return Array.isArray(pools?.[providerType]) ? pools[providerType] : [];
+}
+
+function resolveConfigFilePath(filePath) {
+    if (!filePath || typeof filePath !== 'string') return null;
+    return path.resolve(process.cwd(), filePath);
+}
+
+function isPathInConfigsDirectory(fullPath) {
+    const configsDir = path.resolve(process.cwd(), 'configs');
+    const relativePath = path.relative(configsDir, fullPath);
+    return relativePath === '' || (!!relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
+function getTimestampForFilename() {
+    return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function writeJson(res, statusCode, payload) {
+    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+}
+
+export async function handleExportRefreshTokens(req, res, currentConfig, providerPoolManager, providerType) {
+    try {
+        if (providerType !== KIRO_PROVIDER_TYPE) {
+            writeJson(res, 400, { error: { message: 'Refresh token export is only supported for claude-kiro-oauth' } });
+            return true;
+        }
+
+        const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        const healthyOnly = url.searchParams.get('healthyOnly') === 'true';
+        const format = (url.searchParams.get('format') || 'txt').toLowerCase();
+
+        if (!['txt', 'json'].includes(format)) {
+            writeJson(res, 400, { error: { message: 'Unsupported export format' } });
+            return true;
+        }
+
+        const providers = getProvidersForExport(providerPoolManager, currentConfig, providerType)
+            .filter(provider => !healthyOnly || (provider.isHealthy === true && provider.isDisabled !== true));
+
+        const entries = [];
+        const errors = [];
+
+        for (const provider of providers) {
+            const fullPath = resolveConfigFilePath(provider.KIRO_OAUTH_CREDS_FILE_PATH);
+            if (!fullPath) {
+                errors.push({ uuid: provider.uuid || null, error: 'Missing KIRO_OAUTH_CREDS_FILE_PATH' });
+                continue;
+            }
+
+            if (!isPathInConfigsDirectory(fullPath)) {
+                errors.push({ uuid: provider.uuid || null, path: provider.KIRO_OAUTH_CREDS_FILE_PATH, error: 'Path is outside configs directory' });
+                continue;
+            }
+
+            try {
+                const rawContent = await fs.readFile(fullPath, 'utf-8');
+                const credentials = JSON.parse(rawContent);
+                const refreshToken = credentials.refreshToken || credentials.refresh_token;
+
+                if (!refreshToken || typeof refreshToken !== 'string') {
+                    errors.push({ uuid: provider.uuid || null, path: provider.KIRO_OAUTH_CREDS_FILE_PATH, error: 'Refresh token not found' });
+                    continue;
+                }
+
+                entries.push({
+                    uuid: provider.uuid || null,
+                    customName: provider.customName || null,
+                    isHealthy: provider.isHealthy === true,
+                    isDisabled: provider.isDisabled === true,
+                    path: provider.KIRO_OAUTH_CREDS_FILE_PATH,
+                    refreshToken
+                });
+            } catch (error) {
+                errors.push({ uuid: provider.uuid || null, path: provider.KIRO_OAUTH_CREDS_FILE_PATH, error: error.message });
+            }
+        }
+
+        const scope = healthyOnly ? 'healthy' : 'all';
+        const timestamp = getTimestampForFilename();
+
+        if (format === 'json') {
+            const body = Buffer.from(JSON.stringify({
+                providerType,
+                healthyOnly,
+                exportedAt: new Date().toISOString(),
+                totalProviders: providers.length,
+                tokenCount: entries.length,
+                errorCount: errors.length,
+                tokens: entries,
+                errors
+            }, null, 2), 'utf-8');
+
+            res.writeHead(200, {
+                'Content-Type': 'application/json; charset=utf-8',
+                'Content-Disposition': `attachment; filename="kiro-refresh-tokens-${scope}-${timestamp}.json"`,
+                'Content-Length': body.length,
+                'X-Token-Count': String(entries.length),
+                'X-Error-Count': String(errors.length)
+            });
+            res.end(body);
+            return true;
+        }
+
+        const body = Buffer.from(entries.map(entry => entry.refreshToken).join('\n') + (entries.length > 0 ? '\n' : ''), 'utf-8');
+        res.writeHead(200, {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Content-Disposition': `attachment; filename="kiro-refresh-tokens-${scope}-${timestamp}.txt"`,
+            'Content-Length': body.length,
+            'X-Token-Count': String(entries.length),
+            'X-Error-Count': String(errors.length)
+        });
+        res.end(body);
+        return true;
+    } catch (error) {
+        logger.error('[UI API] Export refresh tokens error:', error);
+        writeJson(res, 500, { error: { message: error.message } });
+        return true;
+    }
+}
+
 export async function handleSingleProviderHealthCheck(req, res, currentConfig, providerPoolManager, providerType, providerUuid) {
     try {
         if (!providerPoolManager) {

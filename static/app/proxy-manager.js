@@ -43,10 +43,18 @@ function updateSummary() {
     const pool = proxies.filter(proxy => proxy.poolEnabled && proxy.enabled).length;
     const assigned = proxies.reduce((sum, proxy) => sum + (proxy.assignedCount || 0), 0);
     const subscription = proxies.filter(proxy => proxy.sourceType === 'subscription').length;
-    document.getElementById('proxiesTotalCount').textContent = total;
-    document.getElementById('proxiesPoolCount').textContent = pool;
-    document.getElementById('proxiesAssignedCount').textContent = assigned;
-    document.getElementById('proxiesSubscriptionCount').textContent = subscription;
+    const summaryValues = {
+        proxiesTotalCount: total,
+        proxiesPoolCount: pool,
+        proxiesAssignedCount: assigned,
+        proxiesSubscriptionCount: subscription
+    };
+    Object.entries(summaryValues).forEach(([id, value]) => {
+        const element = document.getElementById(id);
+        if (element) {
+            element.textContent = value;
+        }
+    });
 }
 
 function renderTable() {
@@ -121,6 +129,29 @@ async function loadProxies() {
 
 function closeModal(modal) {
     modal.remove();
+}
+
+function readFileAsText(file) {
+    if (typeof file.text === 'function') {
+        return file.text();
+    }
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+        reader.readAsText(file);
+    });
+}
+
+function parseMaybeJsonImport(text) {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) {
+        return null;
+    }
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+        return null;
+    }
+    return JSON.parse(trimmed);
 }
 
 function showProxyForm(proxy = null) {
@@ -216,6 +247,13 @@ function showImportModal(kind = 'direct') {
                         </label>
                     </div>
                 ` : ''}
+                ${!isSubscription ? `
+                    <label class="proxy-import-file">
+                        <span>${escapeHtml(t('proxies.importJsonFile'))}</span>
+                        <input id="proxyImportFile" type="file" accept="application/json,.json">
+                    </label>
+                    <p class="proxy-import-hint">${escapeHtml(t('proxies.importJsonHint'))}</p>
+                ` : ''}
                 <textarea class="proxy-modal-textarea" id="proxyImportText" placeholder="${escapeHtml(isSubscription ? t('proxies.subscriptionPlaceholder') : t('proxies.importPlaceholder'))}"></textarea>
             </div>
             <div class="modal-footer">
@@ -228,6 +266,15 @@ function showImportModal(kind = 'direct') {
 
     modal.querySelector('.modal-close').onclick = () => closeModal(modal);
     modal.querySelector('.modal-cancel').onclick = () => closeModal(modal);
+    modal.querySelector('#proxyImportFile')?.addEventListener('change', async event => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        try {
+            modal.querySelector('#proxyImportText').value = await readFileAsText(file);
+        } catch (error) {
+            showToast(t('common.error'), error.message, 'error');
+        }
+    });
     modal.querySelector('.modal-submit').onclick = async () => {
         const text = modal.querySelector('#proxyImportText').value.trim();
         if (!text) {
@@ -235,13 +282,17 @@ function showImportModal(kind = 'direct') {
             return;
         }
         try {
-            const payload = isSubscription
-                ? {
+            let payload;
+            if (isSubscription) {
+                payload = {
                     [text.startsWith('http://') || text.startsWith('https://') ? 'subscriptionUrl' : 'content']: text,
                     keyword: modal.querySelector('#proxyImportKeyword')?.value.trim() || '',
                     startPort: parseInt(modal.querySelector('#proxyImportStartPort')?.value || '11001', 10)
-                }
-                : { text };
+                };
+            } else {
+                const jsonPayload = parseMaybeJsonImport(text);
+                payload = jsonPayload === null ? { text } : { data: jsonPayload };
+            }
             const endpoint = isSubscription ? '/proxies/import-subscription' : '/proxies/import';
             const result = await window.apiClient.post(endpoint, payload);
             closeModal(modal);
@@ -293,18 +344,6 @@ async function handleRowAction(event) {
     }
 }
 
-async function autoAssignAll() {
-    if (!confirm(t('proxies.autoAssignConfirm'))) return;
-    try {
-        const result = await window.apiClient.post('/proxies/auto-assign', {});
-        await window.apiClient.post('/reload-config');
-        await loadProxies();
-        showToast(t('common.success'), t('proxies.autoAssignResult', result), 'success');
-    } catch (error) {
-        showToast(t('common.error'), error.message, 'error');
-    }
-}
-
 async function showSingBoxConfig() {
     try {
         const result = await window.apiClient.get('/proxies/sing-box-config');
@@ -338,7 +377,6 @@ function bindEvents() {
     document.getElementById('addProxyBtn')?.addEventListener('click', () => showProxyForm());
     document.getElementById('importProxiesBtn')?.addEventListener('click', () => showImportModal('direct'));
     document.getElementById('importSubscriptionBtn')?.addEventListener('click', () => showImportModal('subscription'));
-    document.getElementById('autoAssignAllProxiesBtn')?.addEventListener('click', autoAssignAll);
     document.getElementById('generateSingBoxBtn')?.addEventListener('click', showSingBoxConfig);
     document.getElementById('proxySearchInput')?.addEventListener('input', event => {
         searchTerm = event.target.value;

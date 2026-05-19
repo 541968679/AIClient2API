@@ -12,6 +12,8 @@ import {
     loadProviderPools,
     loadProxies,
     mergeImportedProxies,
+    parseProxyImportItem,
+    parseProxyJsonPayload,
     parseProxyLine,
     parseSubscriptionContent,
     pickProxyFromPool,
@@ -203,27 +205,38 @@ export async function handleImportProxies(req, res, currentConfig) {
         const filePath = getProxiesFilePath(currentConfig);
         return await withFileLock(filePath, async () => {
             const existing = loadProxies(currentConfig);
-            const lines = Array.isArray(body.proxies)
-                ? body.proxies
-                : String(body.text || body.proxyText || '').split(/\r?\n/);
+            const importDefaults = {
+                protocol: body.defaultProtocol || 'http',
+                enabled: body.enabled !== false,
+                poolEnabled: body.poolEnabled ?? body.pool_enabled ?? true,
+                tags: body.tags || []
+            };
 
             const imported = [];
             const errors = [];
-            lines.forEach((line, index) => {
+
+            if (body.data !== undefined || body.json !== undefined) {
                 try {
-                    const proxy = typeof line === 'object'
-                        ? line
-                        : parseProxyLine(line, {
-                            protocol: body.defaultProtocol || 'http',
-                            enabled: body.enabled !== false,
-                            poolEnabled: body.poolEnabled ?? body.pool_enabled ?? true,
-                            tags: body.tags || []
-                        });
-                    if (proxy) imported.push(proxy);
+                    imported.push(...parseProxyJsonPayload(body.data ?? body.json, importDefaults));
                 } catch (error) {
-                    errors.push({ index: index + 1, line, error: error.message });
+                    errors.push({ index: 1, error: error.message });
                 }
-            });
+            } else {
+                const lines = Array.isArray(body.proxies)
+                    ? body.proxies
+                    : String(body.text || body.proxyText || '').split(/\r?\n/);
+
+                lines.forEach((line, index) => {
+                    try {
+                        const proxy = typeof line === 'object'
+                            ? parseProxyImportItem(line, importDefaults)
+                            : parseProxyLine(line, importDefaults);
+                        if (proxy) imported.push(proxy);
+                    } catch (error) {
+                        errors.push({ index: index + 1, line, error: error.message });
+                    }
+                });
+            }
 
             const merged = mergeImportedProxies(existing, imported);
             merged.failed += errors.length;

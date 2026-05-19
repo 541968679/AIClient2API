@@ -254,6 +254,14 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
         return await providerApi.handleSingleProviderHealthCheck(req, res, currentConfig, providerPoolManager, providerType, providerUuid);
     }
 
+    // Reset health status for a specific provider node
+    const singleResetHealthMatch = pathParam.match(/^\/api\/providers\/([^\/]+)\/([^\/]+)\/reset-health$/);
+    if (method === 'POST' && singleResetHealthMatch) {
+        const providerType = decodeURIComponent(singleResetHealthMatch[1]);
+        const providerUuid = singleResetHealthMatch[2];
+        return await providerApi.handleSingleProviderResetHealth(req, res, currentConfig, providerPoolManager, providerType, providerUuid);
+    }
+
     // Delete all unhealthy providers for a specific type
     // NOTE: This must be before the generic /{providerType}/{uuid} route to avoid matching 'delete-unhealthy' as UUID
     const deleteUnhealthyMatch = pathParam.match(/^\/api\/providers\/([^\/]+)\/delete-unhealthy$/);

@@ -1184,6 +1184,7 @@
 .kiro-status-badge.unhealthy { color: var(--warning-text); background: var(--warning-bg); border: 1px solid var(--warning-border); }
 .kiro-status-badge.disabled { color: var(--text-secondary); background: var(--bg-tertiary); border: 1px solid var(--border-color); }
 .kiro-status-badge.refresh { color: var(--warning-text); background: var(--warning-bg-light); border: 1px solid var(--warning-border); }
+.kiro-status-badge.checking { color: var(--primary-color); background: var(--primary-10); border: 1px solid var(--primary-20); }
 
 .kiro-error-snippet {
     display: -webkit-box;
@@ -1244,6 +1245,7 @@
     white-space: normal;
 }
 
+.kiro-progress-panel,
 .kiro-usage-refresh-progress {
     padding: 8px 10px;
     border: 1px solid var(--primary-20);
@@ -1251,6 +1253,7 @@
     background: var(--primary-10);
 }
 
+.kiro-progress-panel-top,
 .kiro-usage-refresh-progress-top {
     display: flex;
     align-items: center;
@@ -1260,6 +1263,8 @@
     font-size: 12px;
 }
 
+.kiro-progress-panel-top span,
+.kiro-progress-panel-top small,
 .kiro-usage-refresh-progress-top span,
 .kiro-usage-refresh-progress-top small {
     display: inline-flex;
@@ -1268,6 +1273,7 @@
     min-width: 0;
 }
 
+.kiro-progress-panel-top small,
 .kiro-usage-refresh-progress-top small {
     overflow: hidden;
     color: var(--text-tertiary);
@@ -1275,6 +1281,7 @@
     white-space: nowrap;
 }
 
+.kiro-progress-panel-bar,
 .kiro-usage-refresh-progress-bar {
     overflow: hidden;
     height: 4px;
@@ -1283,6 +1290,7 @@
     background: var(--bg-tertiary);
 }
 
+.kiro-progress-panel-bar span,
 .kiro-usage-refresh-progress-bar span {
     display: block;
     height: 100%;

@@ -1860,6 +1860,108 @@ export async function handleSingleProviderHealthCheck(req, res, currentConfig, p
     }
 }
 
+export async function handleSingleProviderResetHealth(req, res, currentConfig, providerPoolManager, providerType, providerUuid) {
+    const filePath = currentConfig.PROVIDER_POOLS_FILE_PATH || 'configs/provider_pools.json';
+    return withFileLock(filePath, () => _handleSingleProviderResetHealth(req, res, currentConfig, providerPoolManager, providerType, providerUuid)).catch(error => {
+        writeJson(res, 500, { error: { message: 'File operation failed: ' + error.message } });
+        return true;
+    });
+}
+
+async function _handleSingleProviderResetHealth(req, res, currentConfig, providerPoolManager, providerType, providerUuid) {
+    try {
+        const filePath = currentConfig.PROVIDER_POOLS_FILE_PATH || 'configs/provider_pools.json';
+        let providerPools = {};
+        let loadedFromFile = false;
+        if (existsSync(filePath)) {
+            try {
+                const fileContent = readFileSync(filePath, 'utf-8');
+                providerPools = JSON.parse(fileContent);
+                loadedFromFile = true;
+            } catch (readError) {
+                logger.warn('[UI API] Failed to read provider pools during single reset:', readError.message);
+            }
+        }
+
+        const managerPool = Array.isArray(providerPoolManager?.providerStatus?.[providerType])
+            ? providerPoolManager.providerStatus[providerType]
+            : [];
+        const managerProviderStatus = managerPool.find(item => item.config?.uuid === providerUuid) || null;
+
+        if (!loadedFromFile && providerPoolManager?.providerStatus) {
+            for (const [type, statuses] of Object.entries(providerPoolManager.providerStatus)) {
+                providerPools[type] = Array.isArray(statuses)
+                    ? statuses.map(status => status.config).filter(Boolean)
+                    : [];
+            }
+        } else if (!Array.isArray(providerPools[providerType]) && managerPool.length > 0) {
+            providerPools[providerType] = managerPool.map(status => status.config).filter(Boolean);
+        }
+
+        if (!Array.isArray(providerPools[providerType])) {
+            providerPools[providerType] = [];
+        }
+
+        let provider = providerPools[providerType].find(item => item.uuid === providerUuid) || null;
+        if (!provider && managerProviderStatus?.config) {
+            provider = managerProviderStatus.config;
+            providerPools[providerType].push(provider);
+        }
+
+        if (!provider) {
+            writeJson(res, 404, { error: { message: 'Provider not found' } });
+            return true;
+        }
+
+        provider.isHealthy = true;
+        provider.errorCount = 0;
+        provider.refreshCount = 0;
+        provider.needsRefresh = false;
+        provider.lastErrorTime = null;
+        provider.lastErrorMessage = null;
+        provider.scheduledRecoveryTime = null;
+        provider._lastSelectionSeq = 0;
+
+        if (providerPoolManager) {
+            providerPoolManager.providerPools = providerPools;
+            if (managerProviderStatus?.config && managerProviderStatus.config !== provider) {
+                Object.assign(managerProviderStatus.config, provider);
+            } else if (!managerProviderStatus && providerPoolManager.providerPools[providerType]) {
+                providerPoolManager.initializeProviderStatus();
+            }
+        }
+
+        await atomicWriteFile(filePath, JSON.stringify(providerPools, null, 2), 'utf-8');
+        if (currentConfig) {
+            currentConfig.providerPools = providerPools;
+        }
+
+        logger.info(`[UI API] Reset single provider health for ${providerUuid} in ${providerType}`);
+
+        broadcastEvent('config_update', {
+            action: 'reset_health_single',
+            filePath,
+            providerType,
+            providerUuid,
+            providerConfig: sanitizeProviderData(provider),
+            timestamp: new Date().toISOString()
+        });
+
+        writeJson(res, 200, {
+            success: true,
+            message: `Successfully reset health status for provider ${providerUuid}`,
+            providerType,
+            uuid: providerUuid,
+            provider: sanitizeProviderData(provider)
+        });
+        return true;
+    } catch (error) {
+        logger.error('[UI API] Single provider reset health failed:', error);
+        writeJson(res, 500, { error: { message: error.message } });
+        return true;
+    }
+}
+
 export async function handleQuickLinkProvider(req, res, currentConfig, providerPoolManager) {
     try {
         const body = await getRequestBody(req);

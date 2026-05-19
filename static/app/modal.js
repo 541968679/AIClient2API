@@ -21,6 +21,9 @@ let kiroUsageLoading = false;
 let kiroUsageRefreshingUuids = new Set();
 let kiroUsageRefreshProgress = null;
 let kiroUsageRefreshRunId = 0;
+let kiroHealthCheckingUuids = new Set();
+let kiroHealthCheckProgress = null;
+let kiroHealthCheckRunId = 0;
 
 function usesManagedModelList(providerType = '') {
     return Array.from(MANAGED_MODEL_LIST_PROVIDERS).some(baseType =>
@@ -494,6 +497,15 @@ async function performHealthCheckAll(providerType) {
         return;
     }
 
+    if (providerType === 'claude-kiro-oauth') {
+        const targets = currentProviders.filter(provider => provider?.uuid && provider.isDisabled !== true);
+        await performKiroHealthChecks(providerType, targets, {
+            mode: 'all',
+            emptyMessageKey: 'modal.provider.kiroConsole.health.noEnabled'
+        });
+        return;
+    }
+
     try {
         showToast(t('common.info'), t('modal.provider.healthCheckAllRunning'), 'info');
 
@@ -571,6 +583,13 @@ function resetKiroUsageState() {
     kiroUsageRefreshingUuids = new Set();
     kiroUsageRefreshProgress = null;
     kiroUsageRefreshRunId++;
+    resetKiroHealthCheckState();
+}
+
+function resetKiroHealthCheckState() {
+    kiroHealthCheckingUuids = new Set();
+    kiroHealthCheckProgress = null;
+    kiroHealthCheckRunId++;
 }
 
 function getKiroUsageSummary(provider) {
@@ -677,30 +696,41 @@ function getKiroUsageRefreshTargets(targetUuids = null) {
     return currentProviders.filter(provider => provider?.uuid);
 }
 
-function renderKiroUsageRefreshProgress() {
-    const progress = kiroUsageRefreshProgress;
+function getKiroHealthCheckProviderName(provider = {}) {
+    return provider.customName || provider.accountName || provider.name || provider.uuid || '-';
+}
+
+function renderKiroProgressPanel(progress, keyPrefix) {
     if (!progress || !progress.total) return '';
 
     const percent = Math.max(0, Math.min(100, (progress.completed / progress.total) * 100));
-    const label = t('modal.provider.kiroConsole.usage.progress', {
+    const label = t(`${keyPrefix}.progress`, {
         completed: progress.completed,
         total: progress.total
     });
     const current = progress.currentName
-        ? t('modal.provider.kiroConsole.usage.current', { name: progress.currentName })
+        ? t(`${keyPrefix}.current`, { name: progress.currentName })
         : '';
 
     return `
-        <div class="kiro-usage-refresh-progress" role="status">
-            <div class="kiro-usage-refresh-progress-top">
+        <div class="kiro-progress-panel" role="status">
+            <div class="kiro-progress-panel-top">
                 <span><i class="fas fa-spinner fa-spin"></i>${escapeHtml(label)}</span>
                 ${current ? `<small title="${escapeHtml(current)}">${escapeHtml(current)}</small>` : ''}
             </div>
-            <div class="kiro-usage-refresh-progress-bar">
+            <div class="kiro-progress-panel-bar">
                 <span style="width: ${percent}%"></span>
             </div>
         </div>
     `;
+}
+
+function renderKiroUsageRefreshProgress() {
+    return renderKiroProgressPanel(kiroUsageRefreshProgress, 'modal.provider.kiroConsole.usage');
+}
+
+function renderKiroHealthCheckProgress() {
+    return renderKiroProgressPanel(kiroHealthCheckProgress, 'modal.provider.kiroConsole.health');
 }
 
 function renderKiroUsageCell(provider) {
@@ -791,6 +821,14 @@ function getKiroSelectedProviders() {
 
 function getKiroProviderBadges(provider) {
     const badges = [];
+    if (kiroHealthCheckingUuids.has(provider.uuid)) {
+        badges.push({
+            className: 'checking',
+            icon: 'fas fa-spinner fa-spin',
+            label: t('modal.provider.kiroConsole.health.checking')
+        });
+    }
+
     if (provider.isDisabled) {
         badges.push({
             className: 'disabled',
@@ -900,6 +938,13 @@ function renderKiroConsoleActions(providerType) {
                 })}
                 ${renderProviderActionButton({
                     className: 'btn-info',
+                    onClick: `window.resetAllProvidersHealth('${providerType}')`,
+                    icon: 'fas fa-heart',
+                    labelKey: 'modal.provider.resetHealth',
+                    titleKey: 'modal.provider.resetHealthTitle'
+                })}
+                ${renderProviderActionButton({
+                    className: 'btn-info',
                     onClick: `window.refreshUnhealthyUuids('${providerType}')`,
                     icon: 'fas fa-sync-alt',
                     labelKey: 'modal.provider.refreshUnhealthyUuidsBtn'
@@ -977,6 +1022,10 @@ function renderKiroBulkActionsBar() {
                     <i class="fas fa-stethoscope"></i>
                     <span>${escapeHtml(t('modal.provider.kiroConsole.selectedHealthCheck'))}</span>
                 </button>
+                <button class="btn btn-info provider-action-text-btn" onclick="window.resetSelectedKiroProvidersHealth()" ${disabled}>
+                    <i class="fas fa-heart"></i>
+                    <span>${escapeHtml(t('modal.provider.kiroConsole.selectedResetHealth'))}</span>
+                </button>
                 <button class="btn btn-info provider-action-text-btn" onclick="window.refreshSelectedKiroUsage()" ${disabled}>
                     <i class="fas fa-chart-line"></i>
                     <span>${escapeHtml(t('modal.provider.kiroConsole.selectedRefreshUsage'))}</span>
@@ -1041,6 +1090,14 @@ function renderKiroProviderRow(provider) {
     const toggleButtonClass = isDisabled ? 'btn-success' : 'btn-warning';
     const selected = selectedProviderUuids.has(provider.uuid);
     const safeUuid = escapeHtml(provider.uuid);
+    const isCheckingHealth = kiroHealthCheckingUuids.has(provider.uuid);
+    const restoreButton = !isHealthy
+        ? `
+                    <button class="btn-small btn-info" onclick="window.resetSingleKiroProviderHealth('${safeUuid}', event)" title="${escapeHtml(t('modal.provider.resetSingleHealthTitle'))}">
+                        <i class="fas fa-heart"></i>
+                    </button>
+        `
+        : '';
 
     return `
         <div class="provider-item-detail kiro-table-item ${healthClass} ${disabledClass} ${selected ? 'selected' : ''}" data-uuid="${safeUuid}">
@@ -1080,8 +1137,9 @@ function renderKiroProviderRow(provider) {
                         <i class="fas fa-edit"></i>
                     </button>
                     <button class="btn-small btn-info btn-provider-health-check" onclick="window.performSingleHealthCheck('${safeUuid}', event)" title="${escapeHtml(t('modal.provider.healthCheckCurrentTitle'))}">
-                        <i class="fas fa-stethoscope"></i>
+                        <i class="fas ${isCheckingHealth ? 'fa-spinner fa-spin' : 'fa-stethoscope'}"></i>
                     </button>
+                    ${restoreButton}
                     <button class="btn-small btn-info" onclick="window.refreshSingleKiroUsage('${safeUuid}', event)" title="${escapeHtml(t('modal.provider.kiroConsole.forceRefreshUsageTitle'))}">
                         <i class="fas fa-chart-line"></i>
                     </button>
@@ -1103,6 +1161,7 @@ function renderKiroProviderRow(provider) {
 function renderKiroProviderTable(providers) {
     return `
         ${renderKiroUsageRefreshProgress()}
+        ${renderKiroHealthCheckProgress()}
         <div class="kiro-provider-table">
             ${renderKiroTableHeader(providers)}
             <div class="kiro-table-body">
@@ -1338,6 +1397,97 @@ async function refreshSingleKiroUsage(uuid, event) {
     await refreshKiroUsage(true, [uuid]);
 }
 
+async function performKiroHealthChecks(providerType, targets, options = {}) {
+    if (providerType !== 'claude-kiro-oauth') return null;
+
+    const providers = Array.isArray(targets) ? targets.filter(provider => provider?.uuid) : [];
+    if (providers.length === 0) {
+        showToast(
+            t('common.info'),
+            options.emptyMessageKey ? t(options.emptyMessageKey) : t('modal.provider.kiroConsole.noSelection'),
+            'info'
+        );
+        return null;
+    }
+
+    const runId = ++kiroHealthCheckRunId;
+    let successCount = 0;
+    let failCount = 0;
+    let rateLimitCount = 0;
+    let skippedCount = 0;
+
+    kiroHealthCheckingUuids = new Set(providers.map(provider => provider.uuid));
+    kiroHealthCheckProgress = {
+        completed: 0,
+        total: providers.length,
+        currentName: ''
+    };
+    rerenderKiroProviderTable();
+
+    for (const provider of providers) {
+        if (runId !== kiroHealthCheckRunId) return null;
+
+        const providerName = getKiroHealthCheckProviderName(provider);
+        kiroHealthCheckProgress = {
+            ...kiroHealthCheckProgress,
+            currentName: providerName
+        };
+        rerenderKiroProviderTable();
+
+        try {
+            if (provider.isDisabled) {
+                skippedCount++;
+                continue;
+            }
+
+            const response = await window.apiClient.post(
+                `/providers/${encodeURIComponent(providerType)}/${provider.uuid}/health-check`,
+                {}
+            );
+
+            if (response.success && response.healthy) {
+                successCount++;
+            } else {
+                failCount++;
+                if (response.isRateLimitError) {
+                    rateLimitCount++;
+                }
+            }
+        } catch (error) {
+            console.error('Kiro health check failed:', provider.uuid, error);
+            failCount++;
+        } finally {
+            kiroHealthCheckingUuids.delete(provider.uuid);
+            kiroHealthCheckProgress = {
+                ...kiroHealthCheckProgress,
+                completed: kiroHealthCheckProgress.completed + 1
+            };
+            rerenderKiroProviderTable();
+        }
+    }
+
+    kiroHealthCheckProgress = null;
+    rerenderKiroProviderTable();
+
+    await window.apiClient.post('/reload-config');
+    await refreshProviderConfig(providerType);
+
+    const messageKey = options.mode === 'all'
+        ? 'modal.provider.healthCheckAll.complete'
+        : 'modal.provider.kiroConsole.selectedHealthCheckDone';
+    const message = options.mode === 'all'
+        ? t(messageKey, { success: successCount, fail: failCount, rateLimited: rateLimitCount, skipped: skippedCount })
+        : t(messageKey, { success: successCount, fail: failCount });
+
+    showToast(
+        failCount > 0 ? t('common.warning') : t('common.success'),
+        message,
+        failCount > 0 ? 'warning' : 'success'
+    );
+
+    return { successCount, failCount, rateLimitCount, skippedCount };
+}
+
 async function performSelectedKiroHealthCheck() {
     const selected = getKiroSelectedProviders();
     if (selected.length === 0) {
@@ -1349,23 +1499,36 @@ async function performSelectedKiroHealthCheck() {
         return;
     }
 
+    showToast(t('common.info'), t('modal.provider.kiroConsole.selectedHealthChecking', { count: selected.length }), 'info');
+    await performKiroHealthChecks(currentProviderType, selected, { mode: 'selected' });
+}
+
+async function resetKiroProvidersHealth(providers, options = {}) {
+    const targets = Array.isArray(providers) ? providers.filter(provider => provider?.uuid) : [];
+    if (targets.length === 0) {
+        showToast(t('common.info'), t('modal.provider.kiroConsole.noSelection'), 'info');
+        return;
+    }
+
+    if (options.confirmKey && !confirm(t(options.confirmKey, { count: targets.length }))) {
+        return;
+    }
+
     let successCount = 0;
     let failCount = 0;
-    showToast(t('common.info'), t('modal.provider.kiroConsole.selectedHealthChecking', { count: selected.length }), 'info');
-
-    for (const provider of selected) {
+    for (const provider of targets) {
         try {
             const response = await window.apiClient.post(
-                `/providers/${encodeURIComponent(currentProviderType)}/${provider.uuid}/health-check`,
+                `/providers/${encodeURIComponent(currentProviderType)}/${provider.uuid}/reset-health`,
                 {}
             );
-            if (response.success && response.healthy) {
+            if (response.success) {
                 successCount++;
             } else {
                 failCount++;
             }
         } catch (error) {
-            console.error('Selected Kiro health check failed:', provider.uuid, error);
+            console.error('Selected Kiro reset health failed:', provider.uuid, error);
             failCount++;
         }
     }
@@ -1374,9 +1537,30 @@ async function performSelectedKiroHealthCheck() {
     await refreshProviderConfig(currentProviderType);
     showToast(
         failCount > 0 ? t('common.warning') : t('common.success'),
-        t('modal.provider.kiroConsole.selectedHealthCheckDone', { success: successCount, fail: failCount }),
+        t('modal.provider.kiroConsole.selectedResetHealthDone', { success: successCount, fail: failCount }),
         failCount > 0 ? 'warning' : 'success'
     );
+}
+
+async function resetSelectedKiroProvidersHealth() {
+    const selected = getKiroSelectedProviders();
+    if (selected.length === 0) {
+        showToast(t('common.info'), t('modal.provider.kiroConsole.noSelection'), 'info');
+        return;
+    }
+    await resetKiroProvidersHealth(selected, {
+        confirmKey: 'modal.provider.kiroConsole.selectedResetHealthConfirm'
+    });
+}
+
+async function resetSingleKiroProviderHealth(uuid, event) {
+    if (event) event.stopPropagation();
+    const provider = currentProviders.find(item => item.uuid === uuid);
+    if (!provider) {
+        showToast(t('common.error'), t('modal.provider.resetHealth.failed'), 'error');
+        return;
+    }
+    await resetKiroProvidersHealth([provider]);
 }
 
 async function setSelectedKiroProvidersDisabled(disabled) {
@@ -3310,6 +3494,15 @@ async function performHealthCheck(providerType) {
     if (!confirm(t('modal.provider.healthCheckConfirm', {type: providerType}))) {
         return;
     }
+
+    if (providerType === 'claude-kiro-oauth') {
+        const targets = currentProviders.filter(provider => provider?.uuid && provider.isHealthy !== true);
+        await performKiroHealthChecks(providerType, targets, {
+            mode: 'unhealthy',
+            emptyMessageKey: 'modal.provider.kiroConsole.health.noUnhealthy'
+        });
+        return;
+    }
     
     try {
         showToast(t('common.info'), t('modal.provider.healthCheck') + '...', 'info');
@@ -3608,6 +3801,8 @@ export {
     refreshSelectedKiroUsage,
     refreshSingleKiroUsage,
     performSelectedKiroHealthCheck,
+    resetSelectedKiroProvidersHealth,
+    resetSingleKiroProviderHealth,
     setSelectedKiroProvidersDisabled,
     deleteSelectedKiroProviders,
     deleteUnhealthyProviders,
@@ -3645,6 +3840,8 @@ window.refreshKiroUsage = refreshKiroUsage;
 window.refreshSelectedKiroUsage = refreshSelectedKiroUsage;
 window.refreshSingleKiroUsage = refreshSingleKiroUsage;
 window.performSelectedKiroHealthCheck = performSelectedKiroHealthCheck;
+window.resetSelectedKiroProvidersHealth = resetSelectedKiroProvidersHealth;
+window.resetSingleKiroProviderHealth = resetSingleKiroProviderHealth;
 window.setSelectedKiroProvidersDisabled = setSelectedKiroProvidersDisabled;
 window.deleteSelectedKiroProviders = deleteSelectedKiroProviders;
 window.performSingleHealthCheck = performSingleHealthCheck;

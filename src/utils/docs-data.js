@@ -84,6 +84,7 @@ export const API_GUIDE_DATA = [
         { method: 'POST',   path: '/api/providers/{type}/health-check', desc: '触发该类型下所有账号的健康检查' },
         { method: 'POST',   path: '/api/providers/{type}/{uuid}/health-check', desc: '触发单个账号的健康检查' },
         { method: 'POST',   path: '/api/providers/{type}/reset-health', desc: '重置该类型下所有账号的健康状态' },
+        { method: 'POST',   path: '/api/providers/{type}/{uuid}/reset-health', desc: '重置单个账号的健康状态' },
         { method: 'POST',   path: '/api/providers/{type}/{uuid}/detect-models', desc: '探测特定账号支持的模型列表' },
         { method: 'POST',   path: '/api/providers/{type}/refresh-unhealthy-uuids', desc: '刷新该类型下所有不健康账号的 UUID' },
         { method: 'POST',   path: '/api/providers/{type}/{uuid}/enable', desc: '启用特定的账号节点' },

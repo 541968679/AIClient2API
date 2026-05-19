@@ -1724,6 +1724,7 @@ export class ProviderPoolManager {
             provider.config.lastRefreshTime = Date.now(); // 标记为健康时也视为刚刷新完成
             provider.config.lastErrorTime = null;
             provider.config.lastErrorMessage = null;
+            provider.config.scheduledRecoveryTime = null;
             provider.config._lastSelectionSeq = 0;
             
             // 更新健康检测信息
@@ -1817,6 +1818,8 @@ export class ProviderPoolManager {
             provider.config.lastErrorMessage = null;
             provider.config.refreshCount = 0;
             provider.config.needsRefresh = false;
+            provider.config.scheduledRecoveryTime = null;
+            provider.config._lastSelectionSeq = 0;
         });
 
         this._log('info', `Reset all health status for type ${providerType}`);

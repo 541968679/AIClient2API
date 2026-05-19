@@ -2347,6 +2347,18 @@ const translations = {
 };
 
 // 当前语言
+Object.assign(translations['zh-CN'], {
+    'oauth.kiro.refreshOnImport': '导入时立即刷新 RT',
+    'oauth.kiro.refreshOnImportHint': '会请求 Kiro token endpoint。关闭后仅保存 refreshToken，账号首次使用或后台刷新时会通过已分配代理刷新。',
+    'oauth.kiro.refreshSkipped': '未刷新'
+});
+
+Object.assign(translations['en-US'], {
+    'oauth.kiro.refreshOnImport': 'Refresh RT immediately on import',
+    'oauth.kiro.refreshOnImportHint': 'This calls the Kiro token endpoint. When off, only the refreshToken is saved and it refreshes later through the assigned proxy.',
+    'oauth.kiro.refreshSkipped': 'not refreshed'
+});
+
 let currentLanguage = localStorage.getItem('language') || 'zh-CN';
 
 // 获取翻译文本

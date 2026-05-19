@@ -120,6 +120,34 @@ async function fetchWithProxy(url, options = {}, providerType) {
     }
 }
 
+function createRefreshTokenOnlyCredentials(refreshToken, region = KIRO_REFRESH_CONSTANTS.DEFAULT_REGION) {
+    return {
+        accessToken: '',
+        refreshToken,
+        profileArn: '',
+        expiresAt: new Date(0).toISOString(),
+        authMethod: KIRO_REFRESH_CONSTANTS.AUTH_METHOD_SOCIAL,
+        provider: KIRO_REFRESH_CONSTANTS.DEFAULT_PROVIDER,
+        region,
+        importMode: 'refresh-token-only',
+        importedAt: new Date().toISOString()
+    };
+}
+
+async function saveKiroTokenData(tokenData) {
+    const folderName = `${Date.now()}_${crypto.randomUUID().slice(0, 8)}_kiro-auth-token`;
+    const targetDir = path.join(process.cwd(), 'configs', 'kiro', folderName);
+    await fs.promises.mkdir(targetDir, { recursive: true });
+
+    const credPath = path.join(targetDir, `${folderName}.json`);
+    await fs.promises.writeFile(credPath, JSON.stringify(tokenData, null, 2));
+
+    return {
+        credPath,
+        relativePath: path.relative(process.cwd(), credPath)
+    };
+}
+
 /**
  * 生成 HTML 响应页面
  * @param {boolean} isSuccess - 是否成功
@@ -813,7 +841,7 @@ export async function checkKiroCredentialsDuplicate(refreshToken, provider = 'cl
  * @param {boolean} skipDuplicateCheck - 是否跳过重复检查 (默认: false)
  * @returns {Promise<Object>} 批量处理结果
  */
-export async function batchImportKiroRefreshTokens(refreshTokens, region = KIRO_REFRESH_CONSTANTS.DEFAULT_REGION, skipDuplicateCheck = false) {
+export async function batchImportKiroRefreshTokens(refreshTokens, region = KIRO_REFRESH_CONSTANTS.DEFAULT_REGION, skipDuplicateCheck = false, refreshOnImport = false) {
     const results = {
         total: refreshTokens.length,
         success: 0,
@@ -852,18 +880,12 @@ export async function batchImportKiroRefreshTokens(refreshTokens, region = KIRO_
         try {
             logger.info(`${KIRO_OAUTH_CONFIG.logPrefix} 正在刷新第 ${i + 1}/${refreshTokens.length} 个 token...`);
             
-            const tokenData = await refreshKiroToken(refreshToken, region);
+            const tokenData = refreshOnImport
+                ? await refreshKiroToken(refreshToken, region)
+                : createRefreshTokenOnlyCredentials(refreshToken, region);
             
             // 生成文件路径: configs/kiro/{timestamp}_kiro-auth-token/{timestamp}_kiro-auth-token.json
-            const timestamp = Date.now();
-            const folderName = `${timestamp}_kiro-auth-token`;
-            const targetDir = path.join(process.cwd(), 'configs', 'kiro', folderName);
-            await fs.promises.mkdir(targetDir, { recursive: true });
-            
-            const credPath = path.join(targetDir, `${folderName}.json`);
-            await fs.promises.writeFile(credPath, JSON.stringify(tokenData, null, 2));
-            
-            const relativePath = path.relative(process.cwd(), credPath);
+            const { relativePath } = await saveKiroTokenData(tokenData);
             
             logger.info(`${KIRO_OAUTH_CONFIG.logPrefix} Token ${i + 1} 已保存: ${relativePath}`);
             
@@ -871,7 +893,8 @@ export async function batchImportKiroRefreshTokens(refreshTokens, region = KIRO_
                 index: i + 1,
                 success: true,
                 path: relativePath,
-                expiresAt: tokenData.expiresAt
+                expiresAt: tokenData.expiresAt,
+                refreshSkipped: !refreshOnImport
             });
             results.success++;
             
@@ -917,7 +940,7 @@ export async function batchImportKiroRefreshTokens(refreshTokens, region = KIRO_
  * @param {boolean} skipDuplicateCheck - 是否跳过重复检查 (默认: false)
  * @returns {Promise<Object>} 批量处理结果
  */
-export async function batchImportKiroRefreshTokensStream(refreshTokens, region = KIRO_REFRESH_CONSTANTS.DEFAULT_REGION, onProgress = null, skipDuplicateCheck = false) {
+export async function batchImportKiroRefreshTokensStream(refreshTokens, region = KIRO_REFRESH_CONSTANTS.DEFAULT_REGION, onProgress = null, skipDuplicateCheck = false, refreshOnImport = false) {
     const results = {
         total: refreshTokens.length,
         success: 0,
@@ -981,18 +1004,12 @@ export async function batchImportKiroRefreshTokensStream(refreshTokens, region =
         try {
             logger.info(`${KIRO_OAUTH_CONFIG.logPrefix} 正在刷新第 ${i + 1}/${refreshTokens.length} 个 token...`);
             
-            const tokenData = await refreshKiroToken(refreshToken, region);
+            const tokenData = refreshOnImport
+                ? await refreshKiroToken(refreshToken, region)
+                : createRefreshTokenOnlyCredentials(refreshToken, region);
             
             // 生成文件路径: configs/kiro/{timestamp}_kiro-auth-token/{timestamp}_kiro-auth-token.json
-            const timestamp = Date.now();
-            const folderName = `${timestamp}_kiro-auth-token`;
-            const targetDir = path.join(process.cwd(), 'configs', 'kiro', folderName);
-            await fs.promises.mkdir(targetDir, { recursive: true });
-            
-            const credPath = path.join(targetDir, `${folderName}.json`);
-            await fs.promises.writeFile(credPath, JSON.stringify(tokenData, null, 2));
-            
-            const relativePath = path.relative(process.cwd(), credPath);
+            const { relativePath } = await saveKiroTokenData(tokenData);
             
             logger.info(`${KIRO_OAUTH_CONFIG.logPrefix} Token ${i + 1} 已保存: ${relativePath}`);
             
@@ -1000,7 +1017,8 @@ export async function batchImportKiroRefreshTokensStream(refreshTokens, region =
                 index: i + 1,
                 success: true,
                 path: relativePath,
-                expiresAt: tokenData.expiresAt
+                expiresAt: tokenData.expiresAt,
+                refreshSkipped: !refreshOnImport
             };
             results.details.push(progressData.current);
             results.success++;

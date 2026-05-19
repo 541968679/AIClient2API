@@ -2105,6 +2105,13 @@ function showKiroBatchImportModal() {
                         <span id="tokenCountValue" style="font-weight: 600;">0</span>
                     </div>
                 </div>
+                <label style="display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: 13px; color: #374151;">
+                    <input type="checkbox" id="kiroRefreshOnImport" style="margin-top: 2px;">
+                    <span>
+                        <span data-i18n="oauth.kiro.refreshOnImport">${t('oauth.kiro.refreshOnImport')}</span>
+                        <small style="display: block; color: #6b7280; margin-top: 2px;" data-i18n="oauth.kiro.refreshOnImportHint">${t('oauth.kiro.refreshOnImportHint')}</small>
+                    </span>
+                </label>
                 <div class="batch-import-progress" id="batchImportProgress" style="display: none; margin-top: 16px;">
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <i class="fas fa-spinner fa-spin" style="color: #10b981;"></i>
@@ -2137,6 +2144,7 @@ function showKiroBatchImportModal() {
     const submitBtn = modal.querySelector('#batchImportSubmit');
     const closeBtn = modal.querySelector('.modal-close');
     const cancelBtn = modal.querySelector('.modal-cancel');
+    const refreshOnImportInput = modal.querySelector('#kiroRefreshOnImport');
     
     // 实时统计 token 数量
     textarea.addEventListener('input', () => {
@@ -2198,7 +2206,10 @@ function showKiroBatchImportModal() {
                 headers: window.apiClient ? window.apiClient.getAuthHeaders() : {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ refreshTokens: tokens })
+                body: JSON.stringify({
+                    refreshTokens: tokens,
+                    refreshOnImport: refreshOnImportInput?.checked === true
+                })
             });
             
             if (!response.ok) {

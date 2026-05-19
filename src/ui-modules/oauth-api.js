@@ -186,7 +186,7 @@ export async function handleManualOAuthCallback(req, res) {
 export async function handleBatchImportKiroTokens(req, res) {
     try {
         const body = await getRequestBody(req);
-        const { refreshTokens, region, skipDuplicateCheck } = body;
+        const { refreshTokens, region, skipDuplicateCheck, refreshOnImport } = body;
         
         if (!refreshTokens || !Array.isArray(refreshTokens) || refreshTokens.length === 0) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -232,7 +232,8 @@ export async function handleBatchImportKiroTokens(req, res) {
                 // 每处理完一个 token 发送进度更新
                 sendSSE('progress', progress);
             },
-            !!skipDuplicateCheck // 显式传递：默认为 false (执行去重)
+            !!skipDuplicateCheck,
+            refreshOnImport === true
         );
         
         logger.info(`[Kiro Batch Import] Completed: ${result.success} success, ${result.failed} failed`);

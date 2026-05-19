@@ -2355,11 +2355,13 @@ async saveCredentialsToFile(filePath, newData) {
         }
 
         // 检查 token 是否即将过期，如果是则推送到刷新队列
+        await this._ensureAccessTokenForRequest('generateContent');
+
         if (this.isExpiryDateNear()) {
             logger.info('[Kiro] Token is near expiry, marking credential as need refresh...');
             this._markCredentialNeedRefresh('Token near expiry in generateContent');
         }
-        
+
         const finalModel = MODEL_MAPPING[model] ? model : model;
         logger.info(`[Kiro] Calling generateContent with model: ${finalModel}`);
         
@@ -2774,6 +2776,8 @@ async saveCredentialsToFile(filePath, newData) {
             }
             return;
         }
+
+        await this._ensureAccessTokenForRequest('generateContentStream');
 
         const finalModel = MODEL_MAPPING[model] ? model : model;
         logger.info(`[Kiro] Calling generateContentStream with model: ${finalModel} (real streaming)`);
@@ -3563,6 +3567,13 @@ async saveCredentialsToFile(filePath, newData) {
     /**
      * 后台异步刷新 token（不阻塞当前请求）
      */
+    async _ensureAccessTokenForRequest(context) {
+        if (!this.accessToken || this.isTokenExpired()) {
+            logger.info(`[Kiro] Access token missing or expired before ${context}, refreshing synchronously...`);
+            await this.initializeAuth(true);
+        }
+    }
+
     triggerBackgroundRefresh() {
         logger.info('[Kiro] Background token refresh started...');
         this.initializeAuth(true).then(() => {

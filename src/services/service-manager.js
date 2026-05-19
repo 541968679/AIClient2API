@@ -20,9 +20,89 @@ import {
     countProxyAssignments,
     loadProxies
 } from '../utils/proxy-registry.js';
+import { createKiroAccountIdentity } from '../utils/account-fingerprint.js';
 
 // 存储 ProviderPoolManager 实例
 let providerPoolManager = null;
+
+async function readCredentialJson(filePath) {
+    try {
+        const content = await pfs.readFile(filePath, 'utf8');
+        return JSON.parse(content);
+    } catch (error) {
+        logger.warn(`[Auto-Link] Failed to read credential metadata from ${filePath}: ${error.message}`);
+        return null;
+    }
+}
+
+function applyCredentialMetadata(provider, providerType, credentials) {
+    if (!credentials || providerType !== 'claude-kiro-oauth') {
+        return;
+    }
+
+    const identity = credentials.accountName && credentials.accountFingerprint
+        ? {
+            accountName: credentials.accountName,
+            accountFingerprint: credentials.accountFingerprint
+        }
+        : createKiroAccountIdentity(credentials.refreshToken);
+
+    if (identity.accountName && !provider.customName) {
+        provider.customName = identity.accountName;
+    }
+
+    if (identity.accountFingerprint && !provider.accountFingerprint) {
+        provider.accountFingerprint = identity.accountFingerprint;
+    }
+}
+
+async function backfillKiroProviderMetadata(config) {
+    const providers = config.providerPools?.['claude-kiro-oauth'];
+    if (!Array.isArray(providers) || providers.length === 0) {
+        return 0;
+    }
+
+    let updatedCount = 0;
+
+    for (const provider of providers) {
+        if (!provider || typeof provider !== 'object') {
+            continue;
+        }
+        if (provider.customName && provider.accountFingerprint) {
+            continue;
+        }
+
+        const credPath = provider.KIRO_OAUTH_CREDS_FILE_PATH;
+        if (!credPath) {
+            continue;
+        }
+
+        const absolutePath = path.isAbsolute(credPath) ? credPath : path.join(process.cwd(), credPath);
+        const credentials = await readCredentialJson(absolutePath);
+        const previousCustomName = provider.customName;
+        const previousFingerprint = provider.accountFingerprint;
+
+        applyCredentialMetadata(provider, 'claude-kiro-oauth', credentials);
+
+        if (provider.customName !== previousCustomName || provider.accountFingerprint !== previousFingerprint) {
+            updatedCount++;
+        }
+    }
+
+    if (updatedCount > 0) {
+        const filePath = config.PROVIDER_POOLS_FILE_PATH || 'configs/provider_pools.json';
+        try {
+            await withFileLock(filePath, async () => {
+                await atomicWriteFile(filePath, JSON.stringify(config.providerPools, null, 2), 'utf8');
+            });
+            logger.info(`[Initialization] Backfilled Kiro account metadata for ${updatedCount} provider(s).`);
+        } catch (error) {
+            logger.error(`[Initialization] Failed to save backfilled Kiro account metadata: ${error.message}`);
+        }
+    }
+
+    return updatedCount;
+}
 
 /**
  * 扫描 configs 目录并自动关联未关联的配置文件到对应的提供商
@@ -77,6 +157,7 @@ export async function autoLinkProviderConfigs(config, options = {}) {
             // 递归扫描目录
             const newProviders = [];
             await scanProviderDirectory(configsPath, linkedPaths, newProviders, {
+                providerType,
                 credPathKey,
                 defaultCheckModel,
                 needsProjectId,
@@ -200,6 +281,10 @@ async function linkSingleCredential(config, credPath, options = {}) {
             defaultCheckModel,
             needsProjectId
         });
+        if (providerType === 'claude-kiro-oauth') {
+            const credentials = await readCredentialJson(absolutePath);
+            applyCredentialMetadata(newProvider, providerType, credentials);
+        }
         if (options.autoAssignProxy === true) {
             assignProxyToProviderConfig(newProvider, loadProxies(config), countProxyAssignments(config.providerPools));
         }
@@ -231,7 +316,7 @@ async function linkSingleCredential(config, credPath, options = {}) {
  * @param {boolean} options.needsProjectId - 是否需要 PROJECT_ID
  */
 async function scanProviderDirectory(dirPath, linkedPaths, newProviders, options) {
-    const { credPathKey, defaultCheckModel, needsProjectId, autoAssignProxy = false, proxies = [], proxyCounts = {} } = options;
+    const { providerType, credPathKey, defaultCheckModel, needsProjectId, autoAssignProxy = false, proxies = [], proxyCounts = {} } = options;
     
     try {
         const files = await pfs.readdir(dirPath, { withFileTypes: true });
@@ -257,6 +342,10 @@ async function scanProviderDirectory(dirPath, linkedPaths, newProviders, options
                             defaultCheckModel,
                             needsProjectId
                         });
+                        if (providerType === 'claude-kiro-oauth') {
+                            const credentials = await readCredentialJson(fullPath);
+                            applyCredentialMetadata(newProvider, providerType, credentials);
+                        }
                         if (autoAssignProxy) {
                             assignProxyToProviderConfig(newProvider, proxies, proxyCounts);
                         }
@@ -286,6 +375,7 @@ async function scanProviderDirectory(dirPath, linkedPaths, newProviders, options
  * @returns {Promise<Object>} The initialized services
  */
 export async function initApiService(config, isReady = false) {
+    await backfillKiroProviderMetadata(config);
 
     // Initialize or update ProviderPoolManager
     if (providerPoolManager) {

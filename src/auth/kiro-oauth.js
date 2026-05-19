@@ -8,6 +8,7 @@ import { broadcastEvent } from '../services/ui-manager.js';
 import { autoLinkProviderConfigs } from '../services/service-manager.js';
 import { CONFIG } from '../core/config-manager.js';
 import { getProxyConfigForProvider } from '../utils/proxy-utils.js';
+import { createKiroAccountIdentity } from '../utils/account-fingerprint.js';
 
 /**
  * Kiro OAuth 配置（支持多种认证方式）
@@ -124,6 +125,7 @@ function createRefreshTokenOnlyCredentials(refreshToken, region = KIRO_REFRESH_C
     return {
         accessToken: '',
         refreshToken,
+        ...createKiroAccountIdentity(refreshToken),
         profileArn: '',
         expiresAt: new Date(0).toISOString(),
         authMethod: KIRO_REFRESH_CONSTANTS.AUTH_METHOD_SOCIAL,
@@ -457,6 +459,7 @@ async function pollKiroBuilderIDToken(clientId, clientSecret, deviceCode, interv
                 const tokenData = {
                     accessToken: data.accessToken,
                     refreshToken: data.refreshToken,
+                    ...createKiroAccountIdentity(data.refreshToken),
                     expiresAt: new Date(Date.now() + data.expiresIn * 1000).toISOString(),
                     authMethod: 'builder-id',
                     clientId,
@@ -648,6 +651,7 @@ function createKiroHttpCallbackServer(port, codeVerifier, expectedState, options
                     const saveData = {
                         accessToken: tokenData.accessToken,
                         refreshToken: tokenData.refreshToken,
+                        ...createKiroAccountIdentity(tokenData.refreshToken),
                         profileArn: tokenData.profileArn,
                         expiresAt: new Date(Date.now() + (tokenData.expiresIn || 3600) * 1000).toISOString(),
                         authMethod: 'social',
@@ -761,6 +765,7 @@ async function refreshKiroToken(refreshToken, region = KIRO_REFRESH_CONSTANTS.DE
         return {
             accessToken: data.accessToken,
             refreshToken: data.refreshToken || refreshToken,
+            ...createKiroAccountIdentity(refreshToken),
             profileArn: data.profileArn || '',
             expiresAt: expiresAt,
             authMethod: KIRO_REFRESH_CONSTANTS.AUTH_METHOD_SOCIAL,
@@ -1110,6 +1115,7 @@ export async function importAwsCredentials(credentials, skipDuplicateCheck = fal
             clientSecret: credentials.clientSecret,
             accessToken: credentials.accessToken,
             refreshToken: credentials.refreshToken,
+            ...createKiroAccountIdentity(credentials.refreshToken),
             authMethod: credentials.authMethod || 'builder-id',
             // region: credentials.region || KIRO_REFRESH_CONSTANTS.DEFAULT_REGION,
             idcRegion: credentials.idcRegion || KIRO_REFRESH_CONSTANTS.IDC_REGION

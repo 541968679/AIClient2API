@@ -13,6 +13,7 @@ let currentProviders = [];
 let currentProviderType = '';
 let nodeSearchTerm = '';
 let currentViewMode = localStorage.getItem('providerViewMode') || 'list';
+let cachedProxyOptions = [];
 
 function usesManagedModelList(providerType = '') {
     return Array.from(MANAGED_MODEL_LIST_PROVIDERS).some(baseType =>
@@ -142,8 +143,17 @@ function collectDraftProviderConfig(providerDetail, providerType, uuid) {
 
     configSelects.forEach(select => {
         const key = select.dataset.configKey;
-        providerConfig[key] = select.value === 'true';
+        if (key === 'proxyId') {
+            providerConfig[key] = select.value || null;
+        } else {
+            providerConfig[key] = select.value === 'true';
+        }
     });
+
+    const autoAssignProxyInput = providerDetail.querySelector('input[data-config-key="autoAssignProxy"]');
+    if (autoAssignProxyInput) {
+        providerConfig.autoAssignProxy = autoAssignProxyInput.checked;
+    }
 
     if (usesManagedModelList(providerType)) {
         const supportedModels = parseModelsData(getSupportedModelsContainer(uuid)?.dataset.selectedModels || '');
@@ -157,6 +167,61 @@ function collectDraftProviderConfig(providerDetail, providerType, uuid) {
     return providerConfig;
 }
 let cachedModels = []; // 缓存模型列表
+
+async function loadProxyOptions(force = false) {
+    if (!force && cachedProxyOptions.length > 0) {
+        return cachedProxyOptions;
+    }
+    try {
+        const data = await window.apiClient.get('/proxies');
+        cachedProxyOptions = data.proxies || [];
+    } catch (error) {
+        console.warn('Failed to load proxy options:', error);
+        cachedProxyOptions = [];
+    }
+    return cachedProxyOptions;
+}
+
+function renderProxyBindingSection(provider = {}) {
+    const currentProxyId = provider.proxyId || '';
+    const options = cachedProxyOptions.map(proxy => {
+        const selected = proxy.id === currentProxyId ? 'selected' : '';
+        const count = proxy.assignedCount !== undefined ? ` (${proxy.assignedCount})` : '';
+        const status = proxy.enabled === false ? ` - ${t('proxies.disabled')}` : '';
+        return `<option value="${escapeHtml(proxy.id)}" ${selected}>${escapeHtml(proxy.name || proxy.id)}${count}${status}</option>`;
+    }).join('');
+    const proxyLabel = provider.proxy
+        ? `${provider.proxy.name || provider.proxy.id} (${provider.proxy.assignedCount || 0})`
+        : t('modal.provider.noProxy');
+
+    return `
+        <div class="form-grid full-width proxy-binding-section">
+            <div class="config-item">
+                <label>
+                    <i class="fas fa-route"></i> ${escapeHtml(t('modal.provider.proxy'))}
+                    <span class="help-text">${escapeHtml(proxyLabel)}</span>
+                </label>
+                <select class="form-control"
+                        data-config-key="proxyId"
+                        data-config-value="${escapeHtml(currentProxyId)}"
+                        disabled>
+                    <option value="">${escapeHtml(t('modal.provider.noProxy'))}</option>
+                    ${options}
+                </select>
+            </div>
+            <div class="config-item">
+                <label>
+                    <i class="fas fa-random"></i> ${escapeHtml(t('modal.provider.autoAssignProxy'))}
+                    <span class="help-text">${escapeHtml(t('proxies.autoAssign'))}</span>
+                </label>
+                <input type="checkbox"
+                       data-config-key="autoAssignProxy"
+                       data-config-value="false"
+                       disabled>
+            </div>
+        </div>
+    `;
+}
 
 function closeSupportedModelsPicker(overlay) {
     if (!overlay) return;
@@ -394,6 +459,11 @@ function showProviderManagerModal(data, initialSearchTerm = '') {
     currentPage = 1;
     nodeSearchTerm = initialSearchTerm;
     cachedModels = [];
+    loadProxyOptions(true).then(() => {
+        if (document.querySelector(`.provider-modal[data-provider-type="${providerType}"]`)) {
+            window.goToProviderPage(currentPage);
+        }
+    });
     
     // 移除已存在的模态框
     const existingModal = document.querySelector('.provider-modal');
@@ -1202,6 +1272,8 @@ function renderProviderConfig(provider) {
         html += '</div>';
     }
     
+    html += renderProxyBindingSection(provider);
+
     // 添加 notSupportedModels 配置区域
     if (usesManagedModelList(currentProviderType)) {
         html += '<div class="form-grid full-width">';
@@ -1247,7 +1319,8 @@ function getFieldOrder(provider) {
         'isHealthy', 'lastUsed', 'usageCount', 'errorCount', 'lastErrorTime',
         'uuid', 'isDisabled', 'lastHealthCheckTime', 'lastHealthCheckModel', 'lastErrorMessage',
         'notSupportedModels', 'supportedModels', 'refreshCount', 'needsRefresh', '_lastSelectionSeq',
-        'lastRefreshTime', 'lastSuccessTime'
+        'lastRefreshTime', 'lastSuccessTime', 'proxyId', 'proxy_id', 'proxy', 'autoAssignProxy',
+        'auto_assign_proxy'
     ];
     
     // 尝试从当前模态框上下文中获取提供商类型
@@ -1331,11 +1404,14 @@ function editProvider(uuid, event) {
     // 等待一小段时间让展开动画完成，然后切换输入框为可编辑状态
     setTimeout(() => {
         // 切换输入框为可编辑状态
-        configInputs.forEach(input => {
-            input.readOnly = false;
-            if (input.type === 'password') {
-                const actualValue = input.dataset.configValue;
-                input.value = actualValue;
+    configInputs.forEach(input => {
+        input.readOnly = false;
+        if (input.type === 'checkbox') {
+            input.disabled = false;
+        }
+        if (input.type === 'password') {
+            const actualValue = input.dataset.configValue;
+            input.value = actualValue;
             }
         });
         
@@ -1395,7 +1471,10 @@ function cancelEdit(uuid, event) {
         input.readOnly = true;
         const originalValue = input.dataset.configValue;
         // 恢复原始值
-        if (input.type === 'password') {
+        if (input.type === 'checkbox') {
+            input.checked = originalValue === 'true';
+            input.disabled = true;
+        } else if (input.type === 'password') {
             input.value = originalValue ? '••••••••' : '';
         } else {
             input.value = originalValue || '';
@@ -1605,7 +1684,7 @@ async function refreshProviderConfig(providerType) {
  * 显示添加提供商表单
  * @param {string} providerType - 提供商类型
  */
-function showAddProviderForm(providerType) {
+async function showAddProviderForm(providerType) {
     const modal = document.querySelector('.provider-modal');
     const existingForm = modal.querySelector('.add-provider-form');
     
@@ -1613,6 +1692,7 @@ function showAddProviderForm(providerType) {
         existingForm.remove();
         return;
     }
+    await loadProxyOptions(true);
     
     const form = document.createElement('div');
     form.className = 'add-provider-form';
@@ -1641,6 +1721,20 @@ function showAddProviderForm(providerType) {
             <div class="form-group">
                 <label><span data-i18n="modal.provider.queueLimit">队列限制</span> <span class="optional-mark" data-i18n="config.optional">(选填)</span></label>
                 <input type="number" id="newQueueLimit" placeholder="默认0不限制">
+            </div>
+            <div class="form-group">
+                <label data-i18n="modal.provider.proxy">代理</label>
+                <select id="newProxyId">
+                    <option value="">${t('modal.provider.noProxy')}</option>
+                    ${cachedProxyOptions.map(proxy => `<option value="${escapeHtml(proxy.id)}">${escapeHtml(proxy.name || proxy.id)}${proxy.assignedCount !== undefined ? ` (${proxy.assignedCount})` : ''}</option>`).join('')}
+                </select>
+            </div>
+            <div class="form-group">
+                <label data-i18n="modal.provider.autoAssignProxy">自动分配代理</label>
+                <select id="newAutoAssignProxy">
+                    <option value="false">${t('modal.provider.disabled')}</option>
+                    <option value="true">${t('modal.provider.enabled')}</option>
+                </select>
             </div>
         </div>
         <div id="dynamicConfigFields">
@@ -1819,13 +1913,17 @@ async function addProvider(providerType) {
     const checkHealth = document.getElementById('newCheckHealth')?.value === 'true';
     const concurrencyLimit = parseInt(document.getElementById('newConcurrencyLimit')?.value || '0');
     const queueLimit = parseInt(document.getElementById('newQueueLimit')?.value || '0');
+    const proxyId = document.getElementById('newProxyId')?.value || null;
+    const autoAssignProxy = document.getElementById('newAutoAssignProxy')?.value === 'true';
     
     const providerConfig = {
         customName: customName || '', // 允许为空
         checkModelName: checkModelName || '', // 允许为空
         checkHealth,
         concurrencyLimit,
-        queueLimit
+        queueLimit,
+        proxyId,
+        autoAssignProxy
     };
     
     // 根据提供商类型动态收集配置字段（自动匹配 utils.js 中的定义）

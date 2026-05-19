@@ -106,6 +106,11 @@ import {
     loadPlaygroundData
 } from './playground-manager.js';
 
+import {
+    initProxyManager,
+    loadProxiesPageData
+} from './proxy-manager.js';
+
 let isAppInitialized = false;
 
 /**
@@ -141,6 +146,7 @@ function initApp() {
         access: loadAccessInfo,
         config: loadConfiguration,
         providers: loadProvidersPageData,
+        proxies: loadProxiesPageData,
         'custom-models': () => window.customModelsManager?.load(),
         'upload-config': loadConfigList,
         usage: loadUsagePageData,
@@ -163,6 +169,7 @@ function initApp() {
     initPluginManager(); // 初始化插件管理功能
     initTutorialManager(); // 初始化教程管理功能
     initPlaygroundManager(); // 初始化 Playground
+    initProxyManager(); // 初始化代理管理
     initMobileMenu(); // 初始化移动端菜单
     loadInitialData();
     

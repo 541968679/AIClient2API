@@ -8,6 +8,7 @@ import logger from './logger.js';
 import { HttpProxyAgent } from 'http-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { getTLSSidecar } from './tls-sidecar.js';
+import { redactProxyUrl, resolveProxyUrlForProviderConfig } from './proxy-registry.js';
 
 /**
  * 解析代理URL并返回相应的代理配置
@@ -28,7 +29,7 @@ export function parseProxyUrl(proxyUrl) {
         const url = new URL(trimmedUrl);
         const protocol = url.protocol.toLowerCase();
 
-        if (protocol === 'socks5:' || protocol === 'socks4:' || protocol === 'socks:') {
+        if (protocol === 'socks5:' || protocol === 'socks5h:' || protocol === 'socks4:' || protocol === 'socks:') {
             // SOCKS 代理
             const socksAgent = new SocksProxyAgent(trimmedUrl);
             return {
@@ -60,6 +61,11 @@ export function parseProxyUrl(proxyUrl) {
  * @returns {boolean} 是否启用代理
  */
 export function isProxyEnabledForProvider(config, providerType) {
+    const providerProxyUrl = resolveProxyUrlForProviderConfig(config, config);
+    if (providerProxyUrl) {
+        return true;
+    }
+
     if (!config || !config.PROXY_URL || !config.PROXY_ENABLED_PROVIDERS) {
         return false;
     }
@@ -85,13 +91,22 @@ export function isProxyEnabledForProvider(config, providerType) {
  * @returns {Object|null} 代理配置对象或 null
  */
 export function getProxyConfigForProvider(config, providerType) {
+    const providerProxyUrl = resolveProxyUrlForProviderConfig(config, config);
+    if (providerProxyUrl) {
+        const proxyConfig = parseProxyUrl(providerProxyUrl);
+        if (proxyConfig) {
+            logger.info(`[Proxy] Using provider-level ${proxyConfig.proxyType} proxy for ${providerType}: ${redactProxyUrl(providerProxyUrl)}`);
+        }
+        return proxyConfig;
+    }
+
     if (!isProxyEnabledForProvider(config, providerType)) {
         return null;
     }
 
     const proxyConfig = parseProxyUrl(config.PROXY_URL);
     if (proxyConfig) {
-        logger.info(`[Proxy] Using ${proxyConfig.proxyType} proxy for ${providerType}: ${config.PROXY_URL}`);
+        logger.info(`[Proxy] Using ${proxyConfig.proxyType} proxy for ${providerType}: ${redactProxyUrl(config.PROXY_URL)}`);
     }
     return proxyConfig;
 }

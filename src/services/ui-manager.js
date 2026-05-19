@@ -15,6 +15,7 @@ import * as oauthApi from '../ui-modules/oauth-api.js';
 import * as customModelsApi from '../ui-modules/custom-models-api.js';
 import * as accessApi from '../ui-modules/access-api.js';
 import * as eventBroadcast from '../ui-modules/event-broadcast.js';
+import * as proxyApi from '../ui-modules/proxy-api.js';
 import { HELP_DATA, API_GUIDE_DATA, API_EXAMPLES, formatHelpText, formatApiGuideText } from '../utils/docs-data.js';
 
 // Re-export from event-broadcast module
@@ -130,6 +131,45 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
     // Get provider pools summary
     if (method === 'GET' && pathParam === '/api/providers') {
         return await providerApi.handleGetProviders(req, res, currentConfig, providerPoolManager);
+    }
+
+    // Proxy management
+    if (method === 'GET' && pathParam === '/api/proxies') {
+        return await proxyApi.handleGetProxies(req, res, currentConfig, providerPoolManager);
+    }
+
+    if (method === 'POST' && pathParam === '/api/proxies') {
+        return await proxyApi.handleCreateProxy(req, res, currentConfig);
+    }
+
+    if (method === 'POST' && pathParam === '/api/proxies/import') {
+        return await proxyApi.handleImportProxies(req, res, currentConfig);
+    }
+
+    if (method === 'POST' && pathParam === '/api/proxies/import-subscription') {
+        return await proxyApi.handleImportSubscription(req, res, currentConfig);
+    }
+
+    if (method === 'POST' && pathParam === '/api/proxies/auto-assign') {
+        return await proxyApi.handleAutoAssignProxies(req, res, currentConfig, providerPoolManager);
+    }
+
+    if (method === 'GET' && pathParam === '/api/proxies/sing-box-config') {
+        return await proxyApi.handleGenerateSingBoxConfig(req, res, currentConfig);
+    }
+
+    const proxyTestMatch = pathParam.match(/^\/api\/proxies\/([^\/]+)\/test$/);
+    if (method === 'POST' && proxyTestMatch) {
+        return await proxyApi.handleTestProxy(req, res, currentConfig, proxyTestMatch[1]);
+    }
+
+    const proxyItemMatch = pathParam.match(/^\/api\/proxies\/([^\/]+)$/);
+    if (method === 'PUT' && proxyItemMatch) {
+        return await proxyApi.handleUpdateProxy(req, res, currentConfig, proxyItemMatch[1]);
+    }
+
+    if (method === 'DELETE' && proxyItemMatch) {
+        return await proxyApi.handleDeleteProxy(req, res, currentConfig, providerPoolManager, proxyItemMatch[1]);
     }
 
     // Get supported provider types based on registered adapters

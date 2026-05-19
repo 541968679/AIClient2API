@@ -97,6 +97,8 @@ export async function handleGetConfig(req, res, currentConfig) {
         modelFallbackMapping: currentConfig.modelFallbackMapping,
         PROXY_URL: currentConfig.PROXY_URL,
         PROXY_ENABLED_PROVIDERS: currentConfig.PROXY_ENABLED_PROVIDERS,
+        PROXIES_FILE_PATH: currentConfig.PROXIES_FILE_PATH,
+        AUTO_ASSIGN_PROXY_ON_IMPORT: currentConfig.AUTO_ASSIGN_PROXY_ON_IMPORT,
         TLS_SIDECAR_ENABLED: currentConfig.TLS_SIDECAR_ENABLED,
         TLS_SIDECAR_ENABLED_PROVIDERS: currentConfig.TLS_SIDECAR_ENABLED_PROVIDERS,
         TLS_SIDECAR_PORT: currentConfig.TLS_SIDECAR_PORT,
@@ -216,6 +218,8 @@ async function _handleUpdateConfig(req, res, currentConfig, body) {
         // Proxy settings
         if (newConfig.PROXY_URL !== undefined) currentConfig.PROXY_URL = newConfig.PROXY_URL;
         if (newConfig.PROXY_ENABLED_PROVIDERS !== undefined) currentConfig.PROXY_ENABLED_PROVIDERS = newConfig.PROXY_ENABLED_PROVIDERS;
+        if (newConfig.PROXIES_FILE_PATH !== undefined) currentConfig.PROXIES_FILE_PATH = newConfig.PROXIES_FILE_PATH;
+        if (newConfig.AUTO_ASSIGN_PROXY_ON_IMPORT !== undefined) currentConfig.AUTO_ASSIGN_PROXY_ON_IMPORT = parseBooleanConfig(newConfig.AUTO_ASSIGN_PROXY_ON_IMPORT);
 
         // TLS Sidecar settings
         if (newConfig.TLS_SIDECAR_ENABLED !== undefined) currentConfig.TLS_SIDECAR_ENABLED = newConfig.TLS_SIDECAR_ENABLED;
@@ -351,6 +355,8 @@ async function _handleUpdateConfig(req, res, currentConfig, body) {
                 modelFallbackMapping: currentConfig.modelFallbackMapping,
                 PROXY_URL: currentConfig.PROXY_URL,
                 PROXY_ENABLED_PROVIDERS: currentConfig.PROXY_ENABLED_PROVIDERS,
+                PROXIES_FILE_PATH: currentConfig.PROXIES_FILE_PATH,
+                AUTO_ASSIGN_PROXY_ON_IMPORT: currentConfig.AUTO_ASSIGN_PROXY_ON_IMPORT,
                 LOG_ENABLED: currentConfig.LOG_ENABLED,
                 LOG_OUTPUT_MODE: currentConfig.LOG_OUTPUT_MODE,
                 LOG_LEVEL: currentConfig.LOG_LEVEL,

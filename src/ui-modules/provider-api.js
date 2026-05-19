@@ -1,4 +1,6 @@
 import { existsSync, readFileSync } from 'fs';
+import { promises as fs } from 'fs';
+import path from 'path';
 import logger from '../utils/logger.js';
 import { getRequestBody } from '../utils/common.js';
 import {
@@ -12,6 +14,14 @@ import { generateUUID, createProviderConfig, formatSystemPath, detectProviderFro
 import { broadcastEvent } from './event-broadcast.js';
 import { getRegisteredProviders, getServiceAdapter, invalidateServiceAdapter, serviceInstances } from '../providers/adapter.js';
 import { withFileLock, atomicWriteFile } from '../utils/file-lock.js';
+import {
+    countProxyAssignments,
+    loadProxies,
+    pickProxyFromPool,
+    sanitizeProxy
+} from '../utils/proxy-registry.js';
+
+const KIRO_PROVIDER_TYPE = 'claude-kiro-oauth';
 
 
 
@@ -34,10 +44,10 @@ function sanitizeProviderData(provider, maskSensitive = false) {
 
             // 识别敏感字段：包含 KEY, TOKEN, SSO, SECRET, PASSWORD, CLEARANCE 等关键词
             // 同时排除包含 PATH, URL, DIR, ENDPOINT 等关键词的路径/地址字段
-            const isSensitive = /API_KEY|TOKEN|SSO|SECRET|PASSWORD|CLEARANCE|ACCESS_KEY|credentials/i.test(key);
+            const isSensitive = /API_KEY|TOKEN|SSO|SECRET|PASSWORD|CLEARANCE|ACCESS_KEY|credentials|proxyUrl|PROVIDER_PROXY_URL/i.test(key);
             const isPath = /PATH|URL|DIR|ENDPOINT|REGION/i.test(key);
 
-            if (isSensitive && !isPath) {
+            if (isSensitive && (!isPath || /proxyUrl|PROVIDER_PROXY_URL/i.test(key))) {
                 // 对密钥进行脱敏显示（只保留前 4 位和后 4 位）
                 if (val.length > 10) {
                     sanitized[key] = val.substring(0, 4) + '****' + val.substring(val.length - 4);
@@ -114,6 +124,56 @@ function loadProviderPools(currentConfig, providerPoolManager) {
     return JSON.parse(readFileSync(filePath, 'utf-8'));
 }
 
+function enrichProviderProxyInfo(provider, proxyMap) {
+    if (!provider || typeof provider !== 'object') return provider;
+    const proxyId = provider.proxyId || provider.proxy_id;
+    if (!proxyId || !proxyMap?.has(proxyId)) return provider;
+    return {
+        ...provider,
+        proxy: sanitizeProxy(proxyMap.get(proxyId))
+    };
+}
+
+function normalizeProxyAssignmentFields(providerConfig) {
+    if (!providerConfig || typeof providerConfig !== 'object') return;
+    if (providerConfig.proxyId === '' || providerConfig.proxyId === 'none' || providerConfig.proxyId === null) {
+        providerConfig.proxyId = null;
+    }
+}
+
+function maybeAutoAssignProxy(providerConfig, providerPools, currentConfig) {
+    normalizeProxyAssignmentFields(providerConfig);
+    const shouldAutoAssign = providerConfig.autoAssignProxy === true || providerConfig.auto_assign_proxy === true;
+    if (!shouldAutoAssign || providerConfig.proxyId) {
+        delete providerConfig.autoAssignProxy;
+        delete providerConfig.auto_assign_proxy;
+        return null;
+    }
+
+    const proxies = loadProxies(currentConfig);
+    const counts = countProxyAssignments(providerPools);
+    const selected = pickProxyFromPool(proxies, counts);
+    if (!selected) {
+        delete providerConfig.autoAssignProxy;
+        delete providerConfig.auto_assign_proxy;
+        return null;
+    }
+    providerConfig.proxyId = selected.id;
+    delete providerConfig.autoAssignProxy;
+    delete providerConfig.auto_assign_proxy;
+    return selected;
+}
+
+function applyProxyAssignmentRequest(providerConfig, providerPools, currentConfig) {
+    if (!providerConfig || typeof providerConfig !== 'object') return;
+    const requestedAutoAssign = providerConfig.autoAssignProxy === true || providerConfig.auto_assign_proxy === true;
+    if (requestedAutoAssign) {
+        delete providerConfig.proxyId;
+        delete providerConfig.proxy_id;
+    }
+    maybeAutoAssignProxy(providerConfig, providerPools, currentConfig);
+}
+
 function getManagedSupportedModels(providerType, providers = []) {
     return normalizeModelIds(
         providers.flatMap(provider => getConfiguredSupportedModels(providerType, provider))
@@ -137,7 +197,72 @@ function isAuthHealthCheckError(errorMessage = '') {
         /\b(Unauthorized|Forbidden|AccessDenied|InvalidToken|ExpiredToken)\b/i.test(errorMessage);
 }
 
-async function runProviderHealthCheck(providerPoolManager, providerType, providerStatus) {
+function isRateLimitHealthCheckError(errorMessage = '') {
+    return /\b429\b/.test(String(errorMessage)) ||
+        /\b(Too Many Requests|RateLimit|Rate Limit|rate limit)\b/i.test(String(errorMessage));
+}
+
+function getPositiveIntegerConfig(config, key, fallback) {
+    const value = Number(config?.[key]);
+    return Number.isFinite(value) && value >= 0 ? Math.round(value) : fallback;
+}
+
+function getHealthCheckRateLimitRecoveryTime(currentConfig = {}) {
+    const defaultCooldownMs = getPositiveIntegerConfig(currentConfig, 'RATE_LIMIT_COOLDOWN_MS', 30000);
+    const maxCooldownMs = getPositiveIntegerConfig(currentConfig, 'RATE_LIMIT_COOLDOWN_MAX_MS', 300000);
+    const jitterMs = getPositiveIntegerConfig(currentConfig, 'RATE_LIMIT_COOLDOWN_JITTER_MS', 5000);
+    const cooldownMs = Math.min(defaultCooldownMs, Math.max(defaultCooldownMs, maxCooldownMs));
+    const jitter = jitterMs > 0 ? Math.floor(Math.random() * (jitterMs + 1)) : 0;
+    return new Date(Date.now() + cooldownMs + jitter);
+}
+
+function markProviderAfterHealthCheckFailure(providerPoolManager, providerType, providerConfig, errorMessage, currentConfig = {}, options = {}) {
+    const isAuthError = isAuthHealthCheckError(errorMessage);
+    const isRateLimitError = isRateLimitHealthCheckError(errorMessage);
+    let recoveryTime = null;
+
+    if (isRateLimitError && options.rateLimitCooldown) {
+        recoveryTime = getHealthCheckRateLimitRecoveryTime(currentConfig);
+        providerPoolManager.markProviderUnhealthyWithRecoveryTime(
+            providerType,
+            providerConfig,
+            errorMessage || '429 Too Many Requests - health check cooldown',
+            recoveryTime
+        );
+        logger.info(`[UI API] 429 detected for ${providerConfig.uuid}, marked unhealthy until ${recoveryTime.toISOString()}`);
+    } else if (isAuthError) {
+        providerPoolManager.markProviderUnhealthyImmediately(providerType, providerConfig, errorMessage);
+        logger.info(`[UI API] Auth error detected for ${providerConfig.uuid}, immediately marked as unhealthy`);
+    } else {
+        providerPoolManager.markProviderUnhealthy(providerType, providerConfig, errorMessage);
+    }
+
+    return { isAuthError, isRateLimitError, recoveryTime };
+}
+
+async function persistProviderTypeStatus(currentConfig, providerPoolManager, providerType) {
+    const filePath = currentConfig.PROVIDER_POOLS_FILE_PATH || 'configs/provider_pools.json';
+
+    await withFileLock(filePath, async (checkValidity) => {
+        let currentPools = {};
+        if (existsSync(filePath)) {
+            try {
+                const fileContent = readFileSync(filePath, 'utf-8');
+                currentPools = JSON.parse(fileContent);
+            } catch (readError) {
+                logger.warn('[UI API] Failed to read existing provider pools for health check merge:', readError.message);
+            }
+        }
+
+        checkValidity();
+        currentPools[providerType] = providerPoolManager.providerStatus[providerType].map(ps => ps.config);
+        await atomicWriteFile(filePath, JSON.stringify(currentPools, null, 2), 'utf-8');
+    });
+
+    return filePath;
+}
+
+async function runProviderHealthCheck(providerPoolManager, providerType, providerStatus, currentConfig = {}, options = {}) {
     const providerConfig = providerStatus.config;
 
     try {
@@ -171,14 +296,14 @@ async function runProviderHealthCheck(providerPoolManager, providerType, provide
         }
 
         const errorMessage = healthResult.errorMessage || 'Check failed';
-        const isAuthError = isAuthHealthCheckError(errorMessage);
-
-        if (isAuthError) {
-            providerPoolManager.markProviderUnhealthyImmediately(providerType, providerConfig, errorMessage);
-            logger.info(`[UI API] Auth error detected for ${providerConfig.uuid}, immediately marked as unhealthy`);
-        } else {
-            providerPoolManager.markProviderUnhealthy(providerType, providerConfig, errorMessage);
-        }
+        const { isAuthError, isRateLimitError, recoveryTime } = markProviderAfterHealthCheckFailure(
+            providerPoolManager,
+            providerType,
+            providerConfig,
+            errorMessage,
+            currentConfig,
+            options
+        );
 
         providerStatus.config.lastHealthCheckTime = new Date().toISOString();
         if (healthResult.modelName) {
@@ -191,18 +316,20 @@ async function runProviderHealthCheck(providerPoolManager, providerType, provide
             healthy: false,
             modelName: healthResult.modelName,
             message: errorMessage,
-            isAuthError
+            isAuthError,
+            isRateLimitError,
+            recoveryTime: recoveryTime ? recoveryTime.toISOString() : null
         };
     } catch (error) {
         const errorMessage = error.message || 'Unknown error';
-        const isAuthError = isAuthHealthCheckError(errorMessage);
-
-        if (isAuthError) {
-            providerPoolManager.markProviderUnhealthyImmediately(providerType, providerConfig, errorMessage);
-            logger.info(`[UI API] Auth error detected for ${providerConfig.uuid}, immediately marked as unhealthy`);
-        } else {
-            providerPoolManager.markProviderUnhealthy(providerType, providerConfig, errorMessage);
-        }
+        const { isAuthError, isRateLimitError, recoveryTime } = markProviderAfterHealthCheckFailure(
+            providerPoolManager,
+            providerType,
+            providerConfig,
+            errorMessage,
+            currentConfig,
+            options
+        );
 
         providerStatus.config.lastHealthCheckTime = new Date().toISOString();
 
@@ -211,7 +338,9 @@ async function runProviderHealthCheck(providerPoolManager, providerType, provide
             success: false,
             healthy: false,
             message: errorMessage,
-            isAuthError
+            isAuthError,
+            isRateLimitError,
+            recoveryTime: recoveryTime ? recoveryTime.toISOString() : null
         };
     }
 }
@@ -224,15 +353,17 @@ export async function handleGetProviders(req, res, currentConfig, providerPoolMa
     const registeredProviders = getRegisteredProviders();
     let poolTypes = [];
 
+    const proxyMap = new Map(loadProxies(currentConfig).map(proxy => [proxy.id, proxy]));
+
     // 2. 从管理器获取当前所有池的状态
     const providerStatus = {};
     if (providerPoolManager) {
         for (const [type, providers] of Object.entries(providerPoolManager.providerStatus)) {
-            providerStatus[type] = providers.map(p => ({
+            providerStatus[type] = providers.map(p => enrichProviderProxyInfo({
                 ...p.config,
                 activeRequests: p.state?.activeCount || 0,
                 waitingRequests: p.state?.waitingCount || 0
-            }));
+            }, proxyMap));
         }
     }
     
@@ -247,11 +378,11 @@ export async function handleGetProviders(req, res, currentConfig, providerPoolMa
                 if (!providerStatus[type] || providerStatus[type].length === 0) {
                     const fileProviders = poolsData[type] || [];
                     if (fileProviders.length > 0) {
-                        providerStatus[type] = fileProviders.map(p => ({
+                        providerStatus[type] = fileProviders.map(p => enrichProviderProxyInfo({
                             ...p,
                             activeRequests: 0,
                             waitingRequests: 0
-                        }));
+                        }, proxyMap));
                     } else if (!providerStatus[type]) {
                         providerStatus[type] = [];
                     }
@@ -290,7 +421,8 @@ export async function handleGetProviderType(req, res, currentConfig, providerPoo
         logger.warn('[UI API] Failed to load provider pools:', error.message);
     }
 
-    const providers = providerPools[providerType] || [];
+    const proxyMap = new Map(loadProxies(currentConfig).map(proxy => [proxy.id, proxy]));
+    const providers = (providerPools[providerType] || []).map(provider => enrichProviderProxyInfo(provider, proxyMap));
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
         providerType,
@@ -504,10 +636,12 @@ async function _handleAddProvider(req, res, currentConfig, providerPoolManager, 
         
         // 过滤掉脱敏字段
         const filteredConfig = filterMaskedData(providerConfig);
+        normalizeProxyAssignmentFields(filteredConfig);
         if (usesManagedModelList(providerType)) {
             filteredConfig.supportedModels = normalizeModelIds(filteredConfig.supportedModels);
             filteredConfig.notSupportedModels = [];
         }
+        applyProxyAssignmentRequest(filteredConfig, providerPools, currentConfig);
         providerPools[providerType].push(filteredConfig);
 
         // Save to file
@@ -606,6 +740,7 @@ async function _handleUpdateProvider(req, res, currentConfig, providerPoolManage
         
         // 过滤掉传入配置中的脱敏占位符，避免覆盖真实数据
         const filteredConfig = filterMaskedData(providerConfig);
+        normalizeProxyAssignmentFields(filteredConfig);
         if (usesManagedModelList(providerType)) {
             filteredConfig.supportedModels = normalizeModelIds(filteredConfig.supportedModels);
             filteredConfig.notSupportedModels = [];
@@ -620,6 +755,7 @@ async function _handleUpdateProvider(req, res, currentConfig, providerPoolManage
             errorCount: existingProvider.errorCount,
             lastErrorTime: existingProvider.lastErrorTime
         };
+        applyProxyAssignmentRequest(updatedProvider, providerPools, currentConfig);
 
         providerPools[providerType][providerIndex] = updatedProvider;
 
@@ -1314,7 +1450,13 @@ export async function handleSingleProviderHealthCheck(req, res, currentConfig, p
 
         logger.info(`[UI API] Starting single health check for provider ${providerUuid} in ${providerType}`);
 
-        const result = await runProviderHealthCheck(providerPoolManager, providerType, providerStatus);
+        const result = await runProviderHealthCheck(
+            providerPoolManager,
+            providerType,
+            providerStatus,
+            currentConfig,
+            { rateLimitCooldown: providerType === KIRO_PROVIDER_TYPE }
+        );
 
         // 使用文件锁进行持久化，防止并发写入冲突
         const poolFilePath = currentConfig.PROVIDER_POOLS_FILE_PATH || 'configs/provider_pools.json';
@@ -1342,7 +1484,9 @@ export async function handleSingleProviderHealthCheck(req, res, currentConfig, p
             healthy: result.healthy,
             modelName: result.modelName || null,
             message: result.message,
-            isAuthError: result.isAuthError || false
+            isAuthError: result.isAuthError || false,
+            isRateLimitError: result.isRateLimitError || false,
+            recoveryTime: result.recoveryTime || null
         }));
         return true;
     } catch (error) {
@@ -1435,6 +1579,10 @@ export async function handleQuickLinkProvider(req, res, currentConfig, providerP
                 needsProjectId: providerMapping.needsProjectId,
                 urlKeys: urlKeys
             });
+            if (currentConfig.AUTO_ASSIGN_PROXY_ON_IMPORT === true) {
+                newProvider.autoAssignProxy = true;
+                applyProxyAssignmentRequest(newProvider, providerPools, currentConfig);
+            }
 
             providerPools[providerType].push(newProvider);
             linkedProviders.push({ providerType, provider: newProvider });

@@ -79,6 +79,8 @@ export async function initializeConfig(args = process.argv.slice(2), configFileP
         SYSTEM_PROMPT_MODE: 'append',
         PROXY_URL: null, // HTTP/HTTPS/SOCKS5 代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
         PROXY_ENABLED_PROVIDERS: [], // 启用代理的提供商列表，如 ['gemini-cli-oauth', 'claude-kiro-oauth']
+        PROXIES_FILE_PATH: 'configs/proxies.json',
+        AUTO_ASSIGN_PROXY_ON_IMPORT: false,
         PROMPT_LOG_BASE_NAME: "prompt_log",
         PROMPT_LOG_MODE: "none",
         REQUEST_MAX_RETRIES: 3,
@@ -155,6 +157,8 @@ export async function initializeConfig(args = process.argv.slice(2), configFileP
         { flag: '--cron-near-minutes',    configKey: 'CRON_NEAR_MINUTES',      type: 'int' },
         { flag: '--cron-refresh-token',   configKey: 'CRON_REFRESH_TOKEN',     type: 'bool' },
         { flag: '--provider-pools-file',  configKey: 'PROVIDER_POOLS_FILE_PATH', type: 'string' },
+        { flag: '--proxies-file',         configKey: 'PROXIES_FILE_PATH',        type: 'string' },
+        { flag: '--auto-assign-proxy-on-import', configKey: 'AUTO_ASSIGN_PROXY_ON_IMPORT', type: 'bool' },
         { flag: '--custom-models-file',   configKey: 'CUSTOM_MODELS_FILE_PATH', type: 'string' },
         { flag: '--max-error-count',      configKey: 'MAX_ERROR_COUNT',        type: 'int' },
         { flag: '--login-max-attempts',   configKey: 'LOGIN_MAX_ATTEMPTS',     type: 'int' },

@@ -15,6 +15,11 @@ import {
 } from '../utils/provider-utils.js';
 import { withFileLock, atomicWriteFile } from '../utils/file-lock.js';
 import { MODEL_PROVIDER } from '../utils/constants.js';
+import {
+    assignProxyToProviderConfig,
+    countProxyAssignments,
+    loadProxies
+} from '../utils/proxy-registry.js';
 
 // 存储 ProviderPoolManager 实例
 let providerPoolManager = null;
@@ -35,10 +40,11 @@ export async function autoLinkProviderConfigs(config, options = {}) {
     
     let totalNewProviders = 0;
     const allNewProviders = {};
+    const shouldAutoAssignProxy = options.autoAssignProxy === true || config.AUTO_ASSIGN_PROXY_ON_IMPORT === true;
     
     // 如果只关联当前凭证
     if (options.onlyCurrentCred && options.credPath) {
-        const result = await linkSingleCredential(config, options.credPath);
+        const result = await linkSingleCredential(config, options.credPath, { autoAssignProxy: shouldAutoAssignProxy });
         if (result) {
             totalNewProviders = 1;
             allNewProviders[result.displayName] = [result.provider];
@@ -73,7 +79,10 @@ export async function autoLinkProviderConfigs(config, options = {}) {
             await scanProviderDirectory(configsPath, linkedPaths, newProviders, {
                 credPathKey,
                 defaultCheckModel,
-                needsProjectId
+                needsProjectId,
+                autoAssignProxy: shouldAutoAssignProxy,
+                proxies: loadProxies(config),
+                proxyCounts: countProxyAssignments(config.providerPools)
             });
             
             // 如果有新的配置文件需要关联
@@ -126,7 +135,7 @@ export async function autoLinkProviderConfigs(config, options = {}) {
  * @param {string} credPath - 凭证文件路径（相对或绝对路径）
  * @returns {Promise<Object|null>} 返回关联结果或 null
  */
-async function linkSingleCredential(config, credPath) {
+async function linkSingleCredential(config, credPath, options = {}) {
     try {
         // 规范化路径
         const absolutePath = path.isAbsolute(credPath) ? credPath : path.join(process.cwd(), credPath);
@@ -191,6 +200,9 @@ async function linkSingleCredential(config, credPath) {
             defaultCheckModel,
             needsProjectId
         });
+        if (options.autoAssignProxy === true) {
+            assignProxyToProviderConfig(newProvider, loadProxies(config), countProxyAssignments(config.providerPools));
+        }
         
         // 添加到配置
         config.providerPools[providerType].push(newProvider);
@@ -219,7 +231,7 @@ async function linkSingleCredential(config, credPath) {
  * @param {boolean} options.needsProjectId - 是否需要 PROJECT_ID
  */
 async function scanProviderDirectory(dirPath, linkedPaths, newProviders, options) {
-    const { credPathKey, defaultCheckModel, needsProjectId } = options;
+    const { credPathKey, defaultCheckModel, needsProjectId, autoAssignProxy = false, proxies = [], proxyCounts = {} } = options;
     
     try {
         const files = await pfs.readdir(dirPath, { withFileTypes: true });
@@ -245,6 +257,9 @@ async function scanProviderDirectory(dirPath, linkedPaths, newProviders, options
                             defaultCheckModel,
                             needsProjectId
                         });
+                        if (autoAssignProxy) {
+                            assignProxyToProviderConfig(newProvider, proxies, proxyCounts);
+                        }
                         
                         newProviders.push(newProvider);
                     }

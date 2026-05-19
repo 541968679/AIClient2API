@@ -116,6 +116,19 @@
                     <input type="text" id="proxyUrl" class="form-control" data-i18n-placeholder="config.proxy.urlPlaceholder" placeholder="例如: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
                     <small class="form-text" data-i18n="config.proxy.urlNote">支持 HTTP、HTTPS 和 SOCKS5 代理，留空则不使用代理</small>
                 </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="proxiesFilePath" data-i18n="config.proxy.proxiesFilePath">代理池配置文件路径</label>
+                        <input type="text" id="proxiesFilePath" class="form-control" placeholder="configs/proxies.json">
+                    </div>
+                    <div class="form-group">
+                        <label data-i18n="config.proxy.autoAssignOnImport">导入账号时自动分配代理</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="autoAssignProxyOnImport">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
                 <div class="form-group pool-section">
                     <label data-i18n="config.proxy.enabledProviders">启用代理的提供商</label>
                     <div id="proxyProviders" class="provider-tags">

@@ -1,0 +1,220 @@
+.proxies-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0 1.25rem;
+}
+
+.proxies-summary-item {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 1rem;
+    display: grid;
+    gap: 0.35rem;
+    box-shadow: var(--shadow-sm);
+}
+
+.proxies-summary-item span {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.proxies-summary-item strong {
+    font-size: 1.5rem;
+    line-height: 1.2;
+}
+
+.proxies-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.proxies-toolbar .search-input-wrapper {
+    position: relative;
+    min-width: min(100%, 320px);
+    flex: 1;
+}
+
+.proxies-toolbar .search-input-wrapper i {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-tertiary);
+}
+
+.proxies-toolbar input {
+    width: 100%;
+    padding: 0.65rem 0.8rem 0.65rem 2.2rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    background: var(--bg-primary);
+}
+
+.proxies-table-wrap {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    overflow: auto;
+    box-shadow: var(--shadow-sm);
+}
+
+.proxies-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 880px;
+}
+
+.proxies-table th,
+.proxies-table td {
+    padding: 0.85rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: top;
+}
+
+.proxies-table th {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.proxies-table tr:last-child td {
+    border-bottom: 0;
+}
+
+.proxy-name-cell {
+    display: grid;
+    gap: 0.25rem;
+}
+
+.proxy-name-cell strong {
+    color: var(--text-primary);
+}
+
+.proxy-name-cell small,
+.proxy-address-cell small,
+.proxy-check-cell small {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+
+.proxy-address-cell code {
+    display: inline-block;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+    white-space: nowrap;
+    background: var(--bg-secondary);
+    padding: 0.15rem 0.35rem;
+    border-radius: var(--radius-sm);
+}
+
+.proxy-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.proxy-badge.active {
+    background: rgba(16, 185, 129, 0.12);
+    color: #059669;
+}
+
+.proxy-badge.inactive {
+    background: rgba(107, 114, 128, 0.14);
+    color: var(--text-secondary);
+}
+
+.proxy-badge.pool {
+    background: rgba(59, 130, 246, 0.12);
+    color: #2563eb;
+}
+
+.proxy-row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.proxy-row-actions button {
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    padding: 0.35rem 0.5rem;
+    cursor: pointer;
+}
+
+.proxy-row-actions button:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.proxy-row-actions .danger:hover {
+    border-color: #dc2626;
+    color: #dc2626;
+}
+
+.proxies-empty {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 2rem !important;
+}
+
+.proxy-modal-textarea {
+    width: 100%;
+    min-height: 180px;
+    resize: vertical;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 0.75rem;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.proxy-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.proxy-form-grid .full {
+    grid-column: 1 / -1;
+}
+
+.proxy-form-grid label {
+    display: grid;
+    gap: 0.35rem;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.proxy-form-grid input,
+.proxy-form-grid select {
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+@media (max-width: 720px) {
+    .proxy-form-grid {
+        grid-template-columns: 1fr;
+    }
+}

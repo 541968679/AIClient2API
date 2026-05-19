@@ -374,6 +374,10 @@ async function loadConfiguration() {
         // 加载代理配置
         const proxyUrlEl = document.getElementById('proxyUrl');
         if (proxyUrlEl) proxyUrlEl.value = data.PROXY_URL || '';
+        const proxiesFilePathEl = document.getElementById('proxiesFilePath');
+        if (proxiesFilePathEl) proxiesFilePathEl.value = data.PROXIES_FILE_PATH || 'configs/proxies.json';
+        const autoAssignProxyOnImportEl = document.getElementById('autoAssignProxyOnImport');
+        if (autoAssignProxyOnImportEl) autoAssignProxyOnImportEl.checked = !!data.AUTO_ASSIGN_PROXY_ON_IMPORT;
         
         // 加载启用代理的提供商 (标签按钮)
         const proxyProvidersEl = document.getElementById('proxyProviders');
@@ -573,6 +577,8 @@ async function saveConfiguration(options = {}) {
     
     // 保存代理配置
     config.PROXY_URL = document.getElementById('proxyUrl')?.value?.trim() || null;
+    config.PROXIES_FILE_PATH = document.getElementById('proxiesFilePath')?.value?.trim() || 'configs/proxies.json';
+    config.AUTO_ASSIGN_PROXY_ON_IMPORT = document.getElementById('autoAssignProxyOnImport')?.checked || false;
     
     // 获取启用代理的提供商列表 (从标签按钮)
     const proxyProvidersEl = document.getElementById('proxyProviders');

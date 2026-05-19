@@ -108,6 +108,8 @@ export class ProviderPoolManager {
         this.refreshBufferTimers = {}; // 按 providerType 分组的定时器
         this.bufferDelay = options.globalConfig?.REFRESH_BUFFER_DELAY ?? 5000; // 默认5秒缓冲延迟
         this.refreshTaskTimeoutMs = options.globalConfig?.REFRESH_TASK_TIMEOUT_MS ?? 60000; // 默认60秒刷新超时
+        this.recoveryCheckTimers = new Map();
+        this.recoveryCheckingUuids = new Set();
         
         // 用于并发选点时的原子排序辅助（自增序列）
         this._selectionSequence = 0;
@@ -851,6 +853,9 @@ export class ProviderPoolManager {
                             queue: []
                         }
                     });
+                    if (providerConfig.scheduledRecoveryTime && !providerConfig.isHealthy) {
+                        this._scheduleRecoveryCheck(providerType, providerConfig);
+                    }
                 } catch (nodeError) {
                     logger.error(`[ProviderPoolManager] Error initializing node for ${providerType}: ${nodeError.message}`);
                 }
@@ -1693,6 +1698,7 @@ export class ProviderPoolManager {
                 const recoveryDate = recoveryTime instanceof Date ? recoveryTime : new Date(recoveryTime);
                 provider.config.scheduledRecoveryTime = recoveryDate.toISOString();
                 this._log('warn', `Marked provider as unhealthy with recovery time: ${providerConfig.uuid} for type ${providerType}. Recovery at: ${recoveryDate.toISOString()}. Reason: ${errorMessage || 'Quota exhausted'}`);
+                this._scheduleRecoveryCheck(providerType, provider.config);
             } else {
                 this._log('warn', `Marked provider as unhealthy: ${providerConfig.uuid} for type ${providerType}. Reason: ${errorMessage || 'Quota exhausted'}`);
             }
@@ -1716,6 +1722,7 @@ export class ProviderPoolManager {
 
         const provider = this._findProvider(providerType, providerConfig.uuid);
         if (provider) {
+            this._clearRecoveryCheckTimer(providerType, providerConfig.uuid);
             const wasHealthy = provider.config.isHealthy;
             provider.config.isHealthy = true;
             provider.config.errorCount = 0;
@@ -1766,6 +1773,7 @@ export class ProviderPoolManager {
 
         const provider = this._findProvider(providerType, uuid);
         if (provider) {
+            this._clearRecoveryCheckTimer(providerType, uuid);
             provider.config.needsRefresh = false;
             provider.config.refreshCount = 0;
             provider.config.lastRefreshTime = Date.now(); // 显式重置时也更新刷新时间
@@ -1791,6 +1799,7 @@ export class ProviderPoolManager {
 
         const provider = this._findProvider(providerType, providerConfig.uuid);
         if (provider) {
+            this._clearRecoveryCheckTimer(providerType, providerConfig.uuid);
             provider.config.errorCount = 0;
             provider.config.usageCount = 0;
             provider.config.isHealthy = true;
@@ -1812,6 +1821,7 @@ export class ProviderPoolManager {
         if (!pool) return;
 
         pool.forEach(provider => {
+            this._clearRecoveryCheckTimer(providerType, provider.config.uuid);
             provider.config.isHealthy = true;
             provider.config.errorCount = 0;
             provider.config.lastErrorTime = null;
@@ -1839,6 +1849,7 @@ export class ProviderPoolManager {
 
         const provider = this._findProvider(providerType, providerConfig.uuid);
         if (provider) {
+            this._clearRecoveryCheckTimer(providerType, providerConfig.uuid);
             provider.config.isDisabled = true;
             this._log('info', `Disabled provider: ${providerConfig.uuid} for type ${providerType}`);
             this._debouncedSave(providerType);
@@ -1880,6 +1891,7 @@ export class ProviderPoolManager {
         const provider = this._findProvider(providerType, providerConfig.uuid);
         if (provider) {
             const oldUuid = provider.config.uuid;
+            this._clearRecoveryCheckTimer(providerType, oldUuid);
             // 生成新的 UUID
             const newUuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
                 const r = Math.random() * 16 | 0;
@@ -1930,21 +1942,118 @@ export class ProviderPoolManager {
                 if (config.scheduledRecoveryTime && !config.isHealthy) {
                     const recoveryTime = new Date(config.scheduledRecoveryTime);
                     if (now >= recoveryTime) {
-                        this._log('info', `Auto-recovering provider ${config.uuid} (${type}). Scheduled recovery time reached: ${recoveryTime.toISOString()}`);
-                        
-                        // 恢复健康状态
-                        config.isHealthy = true;
-                        config.errorCount = 0;
-                        config.lastErrorTime = null;
-                        config.lastErrorMessage = null;
-                        config.scheduledRecoveryTime = null; // 清除恢复时间
-                        
-                        // 保存更改
-                        this._debouncedSave(type);
+                        this._startRecoveryHealthCheck(type, config);
+                    } else {
+                        this._scheduleRecoveryCheck(type, config);
                     }
                 }
             }
         }
+    }
+
+    _getRecoveryCheckKey(providerType, uuid) {
+        return `${providerType}:${uuid}`;
+    }
+
+    _clearRecoveryCheckTimer(providerType, uuid) {
+        const key = this._getRecoveryCheckKey(providerType, uuid);
+        const timerEntry = this.recoveryCheckTimers.get(key);
+        if (timerEntry?.timer) {
+            clearTimeout(timerEntry.timer);
+            this.recoveryCheckTimers.delete(key);
+        }
+        this.recoveryCheckingUuids.delete(key);
+    }
+
+    _scheduleRecoveryCheck(providerType, providerConfig) {
+        if (!providerConfig?.uuid || !providerConfig.scheduledRecoveryTime || providerConfig.isHealthy) return;
+
+        const recoveryTime = new Date(providerConfig.scheduledRecoveryTime).getTime();
+        if (!Number.isFinite(recoveryTime)) return;
+
+        const key = this._getRecoveryCheckKey(providerType, providerConfig.uuid);
+        const existingTimer = this.recoveryCheckTimers.get(key);
+        if (existingTimer?.recoveryTime === recoveryTime) return;
+        if (existingTimer?.timer) {
+            clearTimeout(existingTimer.timer);
+            this.recoveryCheckTimers.delete(key);
+        }
+
+        const delay = Math.max(0, recoveryTime - Date.now());
+        const timer = setTimeout(() => {
+            this.recoveryCheckTimers.delete(key);
+            this._startRecoveryHealthCheck(providerType, providerConfig);
+        }, delay);
+        if (typeof timer.unref === 'function') timer.unref();
+        this.recoveryCheckTimers.set(key, { timer, recoveryTime });
+    }
+
+    _startRecoveryHealthCheck(providerType, providerConfig) {
+        if (!providerConfig?.uuid || providerConfig.isHealthy || providerConfig.isDisabled) return;
+
+        const key = this._getRecoveryCheckKey(providerType, providerConfig.uuid);
+        if (this.recoveryCheckingUuids.has(key)) return;
+
+        this.recoveryCheckingUuids.add(key);
+        Promise.resolve()
+            .then(() => this._recoverProviderAfterHealthCheck(providerType, providerConfig))
+            .catch(error => {
+                this._log('error', `Recovery health check for ${providerConfig.uuid} (${providerType}) failed unexpectedly: ${error.message}`);
+            })
+            .finally(() => {
+                this.recoveryCheckingUuids.delete(key);
+            });
+    }
+
+    async _recoverProviderAfterHealthCheck(providerType, providerConfig) {
+        const provider = this._findProvider(providerType, providerConfig.uuid);
+        if (!provider || provider.config.isHealthy || provider.config.isDisabled) return;
+
+        this._log('info', `Scheduled recovery time reached for ${provider.config.uuid} (${providerType}); running health check before rejoining pool.`);
+        const result = await this._checkProviderHealth(providerType, provider.config);
+
+        if (result.success) {
+            this.markProviderHealthy(providerType, provider.config, true, result.modelName);
+            this._log('info', `Recovery health check passed for ${provider.config.uuid} (${providerType}); provider restored.`);
+            return;
+        }
+
+        provider.config.lastHealthCheckTime = new Date().toISOString();
+        if (result.modelName) {
+            provider.config.lastHealthCheckModel = result.modelName;
+        }
+        provider.config.lastErrorTime = new Date().toISOString();
+        const rawErrorMessage = result.errorMessage || 'Recovery health check failed';
+        const isRateLimitRecoveryFailure = this._isRateLimitRecoveryError(rawErrorMessage);
+        provider.config.lastErrorMessage = isRateLimitRecoveryFailure
+            ? `429恢复失败: ${rawErrorMessage}`
+            : `恢复检测失败: ${rawErrorMessage}`;
+        provider.config.scheduledRecoveryTime = isRateLimitRecoveryFailure
+            ? this._getNextRateLimitRecoveryTime().toISOString()
+            : null;
+        this._debouncedSave(providerType);
+        if (provider.config.scheduledRecoveryTime) {
+            this._scheduleRecoveryCheck(providerType, provider.config);
+        }
+        this._log('warn', `Recovery health check failed for ${provider.config.uuid} (${providerType}); provider remains unhealthy. Reason: ${provider.config.lastErrorMessage}`);
+    }
+
+    _isRateLimitRecoveryError(errorMessage = '') {
+        return /\b429\b|Too Many Requests|RateLimit|Rate Limit|rate limit/i.test(String(errorMessage || ''));
+    }
+
+    _getNextRateLimitRecoveryTime() {
+        const defaultCooldownMs = this._getPositiveIntegerConfig('RATE_LIMIT_COOLDOWN_MS', 30000);
+        const maxCooldownMs = this._getPositiveIntegerConfig('RATE_LIMIT_COOLDOWN_MAX_MS', 300000);
+        const jitterMs = this._getPositiveIntegerConfig('RATE_LIMIT_COOLDOWN_JITTER_MS', 5000);
+        const cooldownMs = Math.min(defaultCooldownMs, Math.max(defaultCooldownMs, maxCooldownMs));
+        const jitter = jitterMs > 0 ? Math.floor(Math.random() * (jitterMs + 1)) : 0;
+        return new Date(Date.now() + cooldownMs + jitter);
+    }
+
+    _getPositiveIntegerConfig(key, fallback) {
+        const value = Number(this.globalConfig?.[key]);
+        return Number.isFinite(value) && value >= 0 ? Math.round(value) : fallback;
     }
 
     /**
@@ -1988,6 +2097,8 @@ export class ProviderPoolManager {
                         this._log('debug', `Skipping health check for ${providerConfig.uuid} (${providerType}). Waiting for scheduled recovery at ${recoveryTime.toISOString()}`);
                         continue;
                     }
+                    this._startRecoveryHealthCheck(providerType, providerConfig);
+                    continue;
                 }
 
                 // Only attempt to health check unhealthy providers after a certain interval
@@ -2093,6 +2204,16 @@ export class ProviderPoolManager {
         let failCount = 0;
         
         for (const { providerType, provider, uuid, customName } of providersToCheck) {
+            if (provider.config.scheduledRecoveryTime && !provider.config.isHealthy) {
+                const recoveryTime = new Date(provider.config.scheduledRecoveryTime);
+                if (Date.now() < recoveryTime.getTime()) {
+                    this._log('debug', `[ScheduledHealthCheck] Skipping ${uuid} (${providerType}): waiting for scheduled recovery at ${recoveryTime.toISOString()}`);
+                    continue;
+                }
+                this._startRecoveryHealthCheck(providerType, provider.config);
+                continue;
+            }
+
             const providerCheckStart = Date.now();
             const baseProviderType = this._getBaseProviderType(providerType);
             const checkModelName = provider.config.checkModelName || 

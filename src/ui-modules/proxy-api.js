@@ -229,8 +229,8 @@ export async function handleImportProxies(req, res, currentConfig) {
                 lines.forEach((line, index) => {
                     try {
                         const proxy = typeof line === 'object'
-                            ? parseProxyImportItem(line, importDefaults)
-                            : parseProxyLine(line, importDefaults);
+                            ? parseProxyImportItem(line, { ...importDefaults, index })
+                            : parseProxyLine(line, { ...importDefaults, index });
                         if (proxy) imported.push(proxy);
                     } catch (error) {
                         errors.push({ index: index + 1, line, error: error.message });

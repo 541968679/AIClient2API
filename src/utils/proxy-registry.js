@@ -52,6 +52,101 @@ function decodeMaybe(value = '') {
     }
 }
 
+function normalizeProxyNameKey(value = '') {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function isGenericProxyName(value = '') {
+    const normalized = normalizeProxyNameKey(value);
+    if (!normalized) return true;
+    return new Set([
+        'default',
+        'proxy',
+        'proxy:default',
+        'proxy default',
+        'proxy-default',
+        '代理',
+        '代理:default',
+        '代理 default',
+        '代理-default',
+        '节点',
+        '节点:default',
+        'node',
+        'node:default'
+    ]).has(normalized);
+}
+
+function pickMeaningfulProxyName(raw = {}) {
+    const candidates = [raw.name, raw.remark, raw.tag]
+        .map(value => String(value || '').trim())
+        .filter(Boolean);
+    return candidates.find(name => !isGenericProxyName(name)) || candidates[0] || '';
+}
+
+function buildProxyAddressName(raw = {}, protocol = '') {
+    const localHost = raw.localHost || raw.local_host || '';
+    const localPort = raw.localPort ?? raw.local_port;
+    if (localHost && localPort) {
+        return `http://${localHost}:${localPort}`;
+    }
+
+    const host = raw.host || raw.server || '';
+    const port = raw.port ?? raw.server_port ?? raw.serverPort;
+    if (host && port) {
+        const scheme = protocol || String(raw.protocol || '').replace(':', '').toLowerCase() || 'proxy';
+        return `${scheme}://${host}:${port}`;
+    }
+
+    const localUrl = raw.localUrl || raw.local_url || '';
+    if (localUrl) return localUrl;
+
+    const upstreamUrl = raw.upstreamUrl || raw.upstream_url || '';
+    if (upstreamUrl) {
+        const hashIndex = upstreamUrl.indexOf('#');
+        if (hashIndex >= 0) {
+            const nodeName = decodeMaybe(upstreamUrl.slice(hashIndex + 1)).trim();
+            if (nodeName && !isGenericProxyName(nodeName)) return nodeName;
+        }
+        return upstreamUrl.slice(0, 80);
+    }
+
+    return '';
+}
+
+function resolveProxyDisplayName(raw = {}, protocol = '') {
+    const candidate = pickMeaningfulProxyName(raw);
+    if (candidate && !isGenericProxyName(candidate)) {
+        return candidate;
+    }
+    return buildProxyAddressName(raw, protocol) || candidate || 'Proxy';
+}
+
+function getProxyNameUniqueBase(name = '') {
+    return String(name || 'Proxy').trim().replace(/\s+#\d+$/, '') || 'Proxy';
+}
+
+function uniquifyProxyNames(proxies = [], existingNames = []) {
+    const used = new Set(
+        existingNames
+            .map(name => normalizeProxyNameKey(name))
+            .filter(Boolean)
+    );
+
+    return proxies.map(proxy => {
+        const record = normalizeProxyRecord(proxy);
+        const baseName = record.name || 'Proxy';
+        let name = baseName;
+        let suffix = 2;
+        const uniqueBase = getProxyNameUniqueBase(baseName);
+        while (used.has(normalizeProxyNameKey(name))) {
+            name = `${uniqueBase} #${suffix}`;
+            suffix++;
+        }
+        used.add(normalizeProxyNameKey(name));
+        return { ...record, name };
+    });
+}
+
 export function normalizeProxyRecord(raw = {}) {
     const createdAt = raw.createdAt || raw.created_at || nowISO();
     const updatedAt = raw.updatedAt || raw.updated_at || createdAt;
@@ -60,11 +155,11 @@ export function normalizeProxyRecord(raw = {}) {
     const status = raw.status || (raw.enabled === false ? 'inactive' : 'active');
     const enabled = normalizeBool(raw.enabled, status !== 'inactive');
     const poolEnabled = normalizeBool(raw.poolEnabled ?? raw.pool_enabled, true);
-    const name = String(raw.name || raw.remark || raw.tag || '').trim();
+    const name = resolveProxyDisplayName(raw, protocol);
 
     return {
         id: raw.id || crypto.randomUUID(),
-        name: name || raw.host || raw.localUrl || raw.upstreamUrl || 'Proxy',
+        name,
         protocol,
         host: raw.host || '',
         port: normalizeOptionalPort(raw.port),
@@ -304,7 +399,7 @@ export function parseProxyImportItem(item, defaults = {}) {
         port: item.port ?? item.server_port ?? item.serverPort ?? fromKey.port,
         username: item.username ?? item.user ?? fromKey.username ?? '',
         password: item.password ?? item.pass ?? fromKey.password ?? '',
-        name: item.name || item.remark || item.tag || defaults.name,
+        name: pickMeaningfulProxyName(item) || defaults.name,
         enabled: item.enabled ?? (item.status ? normalizeProxyStatusForImport(item.status) !== 'inactive' : defaults.enabled),
         poolEnabled: item.poolEnabled ?? item.pool_enabled ?? defaults.poolEnabled,
         tags: Array.isArray(item.tags) ? item.tags : (defaults.tags || [])
@@ -333,9 +428,10 @@ function normalizeProxyStatusForImport(status = '') {
 }
 
 export function parseProxyJsonPayload(payload, defaults = {}) {
-    return extractProxyItemsFromJsonPayload(payload)
+    const parsed = extractProxyItemsFromJsonPayload(payload)
         .map((item, index) => parseProxyImportItem(item, { ...defaults, index }))
         .filter(Boolean);
+    return uniquifyProxyNames(parsed);
 }
 
 function decodeBase64URLSafe(input) {
@@ -401,12 +497,13 @@ export function parseSubscriptionContent(content, options = {}) {
     }
 
     const keyword = String(options.keyword || '').trim().toLowerCase();
-    return decoded
+    const parsed = decoded
         .split(/\r?\n/)
         .map(line => line.trim())
         .filter(Boolean)
         .filter(line => !keyword || decodeMaybe(line).toLowerCase().includes(keyword))
         .map((line, index) => parseProxyLine(line, { ...options, index }));
+    return uniquifyProxyNames(parsed);
 }
 
 function proxyDedupKey(proxy) {
@@ -417,6 +514,7 @@ function proxyDedupKey(proxy) {
 
 export function mergeImportedProxies(existing = [], imported = []) {
     const merged = existing.map(normalizeProxyRecord);
+    const importedWithNames = uniquifyProxyNames(imported, merged.map(proxy => proxy.name));
     const existingKeys = new Map(merged.map(proxy => [proxyDedupKey(proxy), proxy.id]));
     const result = {
         proxies: merged,
@@ -426,7 +524,7 @@ export function mergeImportedProxies(existing = [], imported = []) {
         items: []
     };
 
-    for (const proxy of imported) {
+    for (const proxy of importedWithNames) {
         try {
             const normalized = normalizeProxyRecord(proxy);
             const key = proxyDedupKey(normalized);

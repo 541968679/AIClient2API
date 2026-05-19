@@ -538,6 +538,24 @@ async function performHealthCheckAll(providerType) {
     }
 }
 
+async function performHealthCheckAllIncludingDisabled(providerType) {
+    if (providerType !== 'claude-kiro-oauth') {
+        await performHealthCheckAll(providerType);
+        return;
+    }
+
+    if (!confirm(t('modal.provider.healthCheckAllIncludingDisabledConfirm', { type: providerType }))) {
+        return;
+    }
+
+    const targets = currentProviders.filter(provider => provider?.uuid);
+    await performKiroHealthChecks(providerType, targets, {
+        mode: 'all',
+        includeDisabled: true,
+        emptyMessageKey: 'modal.provider.kiroConsole.health.noAccounts'
+    });
+}
+
 function formatProviderDateTime(value) {
     return value ? new Date(value).toLocaleString() : '-';
 }
@@ -935,6 +953,13 @@ function renderKiroConsoleActions(providerType) {
                     icon: 'fas fa-heartbeat',
                     labelKey: 'modal.provider.healthCheckAll',
                     titleKey: 'modal.provider.healthCheckAllTitle'
+                })}
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.performHealthCheckAllIncludingDisabled('${providerType}')`,
+                    icon: 'fas fa-universal-access',
+                    labelKey: 'modal.provider.healthCheckAllIncludingDisabled',
+                    titleKey: 'modal.provider.healthCheckAllIncludingDisabledTitle'
                 })}
                 ${renderProviderActionButton({
                     className: 'btn-info',
@@ -1435,7 +1460,7 @@ async function performKiroHealthChecks(providerType, targets, options = {}) {
         rerenderKiroProviderTable();
 
         try {
-            if (provider.isDisabled) {
+            if (provider.isDisabled && options.includeDisabled !== true) {
                 skippedCount++;
                 continue;
             }
@@ -1836,6 +1861,13 @@ function renderKiroProviderSummaryActions(providerType) {
                     icon: 'fas fa-heartbeat',
                     labelKey: 'modal.provider.healthCheckAll',
                     titleKey: 'modal.provider.healthCheckAllTitle'
+                })}
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.performHealthCheckAllIncludingDisabled('${providerType}')`,
+                    icon: 'fas fa-universal-access',
+                    labelKey: 'modal.provider.healthCheckAllIncludingDisabled',
+                    titleKey: 'modal.provider.healthCheckAllIncludingDisabledTitle'
                 })}
                 ${renderProviderActionButton({
                     className: 'btn-info',
@@ -3789,6 +3821,7 @@ export {
     resetAllProvidersHealth,
     performHealthCheck,
     performHealthCheckAll,
+    performHealthCheckAllIncludingDisabled,
     exportKiroRefreshTokens,
     updateKiroStableNames,
     autoAssignProviderProxies,
@@ -3828,6 +3861,7 @@ window.toggleProviderStatus = toggleProviderStatus;
 window.resetAllProvidersHealth = resetAllProvidersHealth;
 window.performHealthCheck = performHealthCheck;
 window.performHealthCheckAll = performHealthCheckAll;
+window.performHealthCheckAllIncludingDisabled = performHealthCheckAllIncludingDisabled;
 window.exportKiroRefreshTokens = exportKiroRefreshTokens;
 window.updateKiroStableNames = updateKiroStableNames;
 window.autoAssignProviderProxies = autoAssignProviderProxies;

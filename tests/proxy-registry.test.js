@@ -2,6 +2,7 @@ import {
     assignProxyToProviderConfig,
     countProxyAssignments,
     isRedactedProxyUrl,
+    mergeImportedProxies,
     parseProxyJsonPayload,
     parseProxyLine,
     parseSubscriptionContent,
@@ -102,6 +103,42 @@ describe('proxy-registry', () => {
         expect(proxies[0].port).toBe(1080);
         expect(proxies[0].username).toBe('user');
         expect(proxies[0].password).toBe('pass');
+    });
+
+    test('replaces generic proxy names with distinct address names', () => {
+        const proxies = parseProxyJsonPayload({
+            proxies: [
+                { proxy_key: 'http|10.0.0.1|8001||', name: '代理:default' },
+                { proxy_key: 'http|10.0.0.2|8002||', name: '代理:default' },
+                { proxy_key: 'http|10.0.0.2|8003||', name: 'Edge US' },
+                { proxy_key: 'http|10.0.0.3|8004||', name: 'Edge US' }
+            ]
+        });
+
+        expect(proxies.map(proxy => proxy.name)).toEqual([
+            'http://10.0.0.1:8001',
+            'http://10.0.0.2:8002',
+            'Edge US',
+            'Edge US #2'
+        ]);
+    });
+
+    test('keeps imported proxy names unique against existing names', () => {
+        const merged = mergeImportedProxies(
+            [{ name: 'Edge US', protocol: 'http', host: '10.0.0.1', port: 8001 }],
+            parseProxyJsonPayload({
+                proxies: [
+                    { proxy_key: 'http|10.0.0.2|8002||', name: 'Edge US' },
+                    { proxy_key: 'http|10.0.0.3|8003||', name: 'Edge US' }
+                ]
+            })
+        );
+
+        expect(merged.proxies.map(proxy => proxy.name)).toEqual([
+            'Edge US',
+            'Edge US #2',
+            'Edge US #3'
+        ]);
     });
 
     test('parses wrapped proxy data JSON and A2 proxy registry JSON', () => {

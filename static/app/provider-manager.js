@@ -38,6 +38,19 @@ function initProvidersPageHelpers() {
     bindOnce(openConfigBtn, 'click', () => navigateToSection('config'), 'providersOpenConfig');
 }
 
+async function refreshKiroProviderConsoleIfOpen() {
+    const modal = document.querySelector('.provider-modal[data-provider-type="claude-kiro-oauth"]');
+    if (!modal || typeof window.refreshProviderConfig !== 'function') {
+        return;
+    }
+
+    try {
+        await window.refreshProviderConfig('claude-kiro-oauth');
+    } catch (error) {
+        console.warn('Failed to refresh Kiro provider console:', error);
+    }
+}
+
 function updateProvidersHandoffSummary(providers = {}, supportedProviders = []) {
     const providerGroups = Object.values(providers).filter(group => Array.isArray(group) && group.length > 0);
     const totalGroups = providerGroups.length;
@@ -2312,6 +2325,7 @@ function showKiroBatchImportModal() {
                                         importSuccess = true;
                                         loadProviders();
                                         loadConfigList();
+                                        await refreshKiroProviderConsoleIfOpen();
                                     }
                                     
                                 } else if (eventType === 'error') {
@@ -2354,6 +2368,8 @@ function showKiroBatchImportModal() {
         }
     };
 }
+
+window.showKiroBatchImportModal = showKiroBatchImportModal;
 
 /**
  * 显示 Kiro AWS 账号导入模态框
@@ -3122,6 +3138,7 @@ function showKiroAwsImportModal() {
                                             importSuccess = true;
                                             loadProviders();
                                             loadConfigList();
+                                            await refreshKiroProviderConsoleIfOpen();
                                         }
                                         
                                     } else if (eventType === 'error') {
@@ -3157,6 +3174,7 @@ function showKiroAwsImportModal() {
                     // 刷新提供商列表和配置列表
                     loadProviders();
                     loadConfigList();
+                    await refreshKiroProviderConsoleIfOpen();
                 } else if (response.error === 'duplicate') {
                     // 显示重复凭据警告
                     const existingPath = response.existingPath || '';
@@ -3197,6 +3215,8 @@ function showKiroAwsImportModal() {
         }
     });
 }
+
+window.showKiroAwsImportModal = showKiroAwsImportModal;
 
 /**
  * 执行生成授权链接

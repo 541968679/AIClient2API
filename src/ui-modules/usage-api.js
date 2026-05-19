@@ -1,6 +1,6 @@
 import { CONFIG } from '../core/config-manager.js';
 import logger from '../utils/logger.js';
-import { serviceInstances, getServiceAdapter } from '../providers/adapter.js';
+import { serviceInstances, getServiceAdapter, invalidateServiceAdapter } from '../providers/adapter.js';
 import { formatKiroUsage, formatGeminiUsage, formatAntigravityUsage, formatCodexUsage, formatGrokUsage } from '../services/usage-service.js';
 import { readUsageCache, writeUsageCache, readProviderUsageCache, updateProviderUsageCache } from './usage-cache.js';
 import { PROVIDER_MAPPINGS } from '../utils/provider-utils.js';
@@ -88,7 +88,7 @@ function loadProviderList(providerType, currentConfig, providerPoolManager) {
  * @param {Object} providerPoolManager - 提供商池管理器
  * @returns {Promise<Object>} 提供商用量信息
  */
-async function getProviderTypeUsage(providerType, currentConfig, providerPoolManager) {
+async function getProviderTypeUsage(providerType, currentConfig, providerPoolManager, targetUuids = null) {
     const result = {
         providerType,
         instances: [],
@@ -98,9 +98,13 @@ async function getProviderTypeUsage(providerType, currentConfig, providerPoolMan
     };
 
     // 获取提供商池中的所有实例（使用统一的加载函数）
-    const providers = loadProviderList(providerType, currentConfig, providerPoolManager);
+    const allProviders = loadProviderList(providerType, currentConfig, providerPoolManager);
+    const targetUuidSet = targetUuids && targetUuids.length > 0 ? new Set(targetUuids) : null;
+    const providers = targetUuidSet
+        ? allProviders.filter(provider => targetUuidSet.has(provider.uuid))
+        : allProviders;
 
-    result.totalCount = providers.length;
+    result.totalCount = targetUuidSet ? allProviders.length : providers.length;
 
     // 遍历所有提供商实例获取用量
     for (const provider of providers) {
@@ -157,6 +161,17 @@ async function getProviderTypeUsage(providerType, currentConfig, providerPoolMan
     }
 
     return result;
+}
+
+function invalidateUsageAdapters(providerType, currentConfig, providerPoolManager, targetUuids = null) {
+    const targetUuidSet = targetUuids && targetUuids.length > 0 ? new Set(targetUuids) : null;
+    const providers = loadProviderList(providerType, currentConfig, providerPoolManager);
+
+    for (const provider of providers) {
+        if (!provider?.uuid) continue;
+        if (targetUuidSet && !targetUuidSet.has(provider.uuid)) continue;
+        invalidateServiceAdapter(providerType, provider.uuid);
+    }
 }
 
 /**
@@ -293,7 +308,6 @@ export async function handleGetUsage(req, res, currentConfig, providerPoolManage
         // 解析查询参数，检查是否需要强制刷新
         const url = new URL(req.url, `http://${req.headers.host}`);
         const refresh = url.searchParams.get('refresh') === 'true';
-        
         let usageResults;
         
         if (!refresh) {
@@ -342,6 +356,11 @@ export async function handleGetProviderUsage(req, res, currentConfig, providerPo
         // 解析查询参数，检查是否需要强制刷新
         const url = new URL(req.url, `http://${req.headers.host}`);
         const refresh = url.searchParams.get('refresh') === 'true';
+        const cacheOnly = url.searchParams.get('cacheOnly') === 'true';
+        const targetUuids = (url.searchParams.get('uuids') || '')
+            .split(',')
+            .map(uuid => uuid.trim())
+            .filter(Boolean);
         
         let usageResults;
         
@@ -353,13 +372,55 @@ export async function handleGetProviderUsage(req, res, currentConfig, providerPo
                 usageResults = { ...cachedData, fromCache: true };
             }
         }
+
+        if (!usageResults && cacheOnly) {
+            usageResults = {
+                providerType,
+                instances: [],
+                totalCount: 0,
+                successCount: 0,
+                errorCount: 0,
+                fromCache: true,
+                cacheOnly: true
+            };
+        }
         
         if (!usageResults) {
             // Cache does not exist or refresh required, re-query
             logger.info(`[Usage API] Fetching fresh usage data for ${providerType}`);
-            usageResults = await getProviderTypeUsage(providerType, currentConfig, providerPoolManager);
+            if (refresh) {
+                invalidateUsageAdapters(providerType, currentConfig, providerPoolManager, targetUuids);
+            }
+            usageResults = await getProviderTypeUsage(providerType, currentConfig, providerPoolManager, targetUuids);
             // 更新缓存
-            await updateProviderUsageCache(providerType, usageResults);
+            if (targetUuids.length > 0) {
+                const cachedData = await readProviderUsageCache(providerType);
+                if (cachedData && Array.isArray(cachedData.instances)) {
+                    const targetUuidSet = new Set(targetUuids);
+                    const refreshedByUuid = new Map(
+                        (usageResults.instances || []).map(instance => [instance.uuid, instance])
+                    );
+                    usageResults = {
+                        ...usageResults,
+                        instances: cachedData.instances.map(instance =>
+                            targetUuidSet.has(instance.uuid)
+                                ? (refreshedByUuid.get(instance.uuid) || instance)
+                                : instance
+                        )
+                    };
+                    for (const instance of usageResults.instances) {
+                        refreshedByUuid.delete(instance.uuid);
+                    }
+                    usageResults.instances.push(...refreshedByUuid.values());
+                    usageResults.successCount = usageResults.instances.filter(instance => instance.success).length;
+                    usageResults.errorCount = usageResults.instances.length - usageResults.successCount;
+                    await updateProviderUsageCache(providerType, usageResults);
+                } else {
+                    await updateProviderUsageCache(providerType, usageResults);
+                }
+            } else {
+                await updateProviderUsageCache(providerType, usageResults);
+            }
         }
         
         // Always include current server time

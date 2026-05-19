@@ -612,12 +612,142 @@ async function autoAssignProviderProxies(providerType) {
     }
 }
 
-function promoteKiroSummarySecondaryButtons(summaryActions) {
-    if (!summaryActions) return;
-    summaryActions.querySelectorAll('.btn-secondary').forEach(button => {
-        button.classList.remove('btn-secondary');
-        button.classList.add('btn-info');
-    });
+function renderProviderActionButton({ className = 'btn-info', onClick, icon, labelKey, titleKey = null }) {
+    const title = titleKey ? ` title="${escapeHtml(t(titleKey))}"` : '';
+    return `
+        <button class="btn ${className} provider-action-text-btn" onclick="${onClick}"${title}>
+            <i class="${icon}"></i>
+            <span data-i18n="${labelKey}">${escapeHtml(t(labelKey))}</span>
+        </button>
+    `;
+}
+
+function renderProviderActionRow(labelKey, buttonsHtml) {
+    return `
+        <div class="provider-action-row">
+            <span class="provider-action-row-label" data-i18n="${labelKey}">${escapeHtml(t(labelKey))}</span>
+            <div class="provider-action-row-buttons">
+                ${buttonsHtml}
+            </div>
+        </div>
+    `;
+}
+
+function renderDefaultProviderSummaryActions(providerType) {
+    return `
+        <div class="provider-summary-actions">
+            ${renderProviderActionButton({
+                className: 'btn-success',
+                onClick: `window.showAddProviderForm('${providerType}')`,
+                icon: 'fas fa-plus',
+                labelKey: 'modal.provider.add'
+            })}
+            ${renderProviderActionButton({
+                className: 'btn-warning',
+                onClick: `window.resetAllProvidersHealth('${providerType}')`,
+                icon: 'fas fa-heartbeat',
+                labelKey: 'modal.provider.resetHealth'
+            })}
+            ${renderProviderActionButton({
+                className: 'btn-info',
+                onClick: `window.performHealthCheck('${providerType}')`,
+                icon: 'fas fa-stethoscope',
+                labelKey: 'modal.provider.healthCheck'
+            })}
+            ${renderProviderActionButton({
+                className: 'btn-secondary',
+                onClick: `window.refreshUnhealthyUuids('${providerType}')`,
+                icon: 'fas fa-sync-alt',
+                labelKey: 'modal.provider.refreshUnhealthyUuidsBtn'
+            })}
+            ${renderProviderActionButton({
+                className: 'btn-danger',
+                onClick: `window.deleteUnhealthyProviders('${providerType}')`,
+                icon: 'fas fa-trash-alt',
+                labelKey: 'modal.provider.deleteUnhealthyBtn'
+            })}
+        </div>
+    `;
+}
+
+function renderKiroProviderSummaryActions(providerType) {
+    return `
+        <div class="provider-summary-actions provider-summary-actions-grouped">
+            ${renderProviderActionRow('modal.provider.actions.account', `
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.showAddProviderForm('${providerType}')`,
+                    icon: 'fas fa-plus',
+                    labelKey: 'modal.provider.add'
+                })}
+            `)}
+            ${renderProviderActionRow('modal.provider.actions.proxyName', `
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.autoAssignProviderProxies('${providerType}')`,
+                    icon: 'fas fa-random',
+                    labelKey: 'proxies.autoAssign',
+                    titleKey: 'proxies.autoAssignTitle'
+                })}
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.updateKiroStableNames('${providerType}')`,
+                    icon: 'fas fa-signature',
+                    labelKey: 'modal.provider.updateKiroNames',
+                    titleKey: 'modal.provider.updateKiroNamesTitle'
+                })}
+            `)}
+            ${renderProviderActionRow('modal.provider.actions.health', `
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.resetAllProvidersHealth('${providerType}')`,
+                    icon: 'fas fa-heartbeat',
+                    labelKey: 'modal.provider.resetHealth'
+                })}
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.performHealthCheck('${providerType}')`,
+                    icon: 'fas fa-stethoscope',
+                    labelKey: 'modal.provider.healthCheck'
+                })}
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.performHealthCheckAll('${providerType}')`,
+                    icon: 'fas fa-heartbeat',
+                    labelKey: 'modal.provider.healthCheckAll',
+                    titleKey: 'modal.provider.healthCheckAllTitle'
+                })}
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.refreshUnhealthyUuids('${providerType}')`,
+                    icon: 'fas fa-sync-alt',
+                    labelKey: 'modal.provider.refreshUnhealthyUuidsBtn'
+                })}
+            `)}
+            ${renderProviderActionRow('modal.provider.actions.exportCleanup', `
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.exportKiroRefreshTokens('${providerType}', false)`,
+                    icon: 'fas fa-download',
+                    labelKey: 'modal.provider.exportRtAll',
+                    titleKey: 'modal.provider.exportRtAllTitle'
+                })}
+                ${renderProviderActionButton({
+                    className: 'btn-info',
+                    onClick: `window.exportKiroRefreshTokens('${providerType}', true)`,
+                    icon: 'fas fa-file-medical-alt',
+                    labelKey: 'modal.provider.exportRtHealthy',
+                    titleKey: 'modal.provider.exportRtHealthyTitle'
+                })}
+                ${renderProviderActionButton({
+                    className: 'btn-danger',
+                    onClick: `window.deleteUnhealthyProviders('${providerType}')`,
+                    icon: 'fas fa-trash-alt',
+                    labelKey: 'modal.provider.deleteUnhealthyBtn'
+                })}
+            `)}
+        </div>
+    `;
 }
 
 /**
@@ -666,7 +796,7 @@ function showProviderManagerModal(data, initialSearchTerm = '') {
                 </button>
             </div>
             <div class="provider-modal-body">
-                <div class="provider-summary">
+                <div class="provider-summary ${isKiroProvider ? 'kiro-summary' : ''}">
                     <div class="provider-summary-item">
                         <span class="label" data-i18n="modal.provider.totalAccounts">总账户数:</span>
                         <span class="value">${totalCount}</span>
@@ -675,23 +805,7 @@ function showProviderManagerModal(data, initialSearchTerm = '') {
                         <span class="label" data-i18n="modal.provider.healthyAccounts">健康账户:</span>
                         <span class="value">${healthyCount}</span>
                     </div>
-                    <div class="provider-summary-actions">
-                        <button class="btn btn-success" onclick="window.showAddProviderForm('${providerType}')">
-                            <i class="fas fa-plus"></i> <span data-i18n="modal.provider.add">添加新提供商</span>
-                        </button>
-                        <button class="btn btn-warning" onclick="window.resetAllProvidersHealth('${providerType}')" data-i18n="modal.provider.resetHealth" title="将所有节点的健康状态重置为健康">
-                            <i class="fas fa-heartbeat"></i> 重置为健康
-                        </button>
-                        <button class="btn btn-info" onclick="window.performHealthCheck('${providerType}')" data-i18n="modal.provider.healthCheck" title="对不健康节点执行健康检测">
-                            <i class="fas fa-stethoscope"></i> 检测不健康
-                        </button>
-                        <button class="btn btn-secondary" onclick="window.refreshUnhealthyUuids('${providerType}')" data-i18n="modal.provider.refreshUnhealthyUuids" title="刷新不健康节点的UUID">
-                            <i class="fas fa-sync-alt"></i> <span data-i18n="modal.provider.refreshUnhealthyUuidsBtn">刷新UUID</span>
-                        </button>
-                        <button class="btn btn-danger" onclick="window.deleteUnhealthyProviders('${providerType}')" data-i18n="modal.provider.deleteUnhealthy" title="删除不健康节点">
-                            <i class="fas fa-trash-alt"></i> <span data-i18n="modal.provider.deleteUnhealthyBtn">删除不健康</span>
-                        </button>
-                    </div>
+                    ${isKiroProvider ? renderKiroProviderSummaryActions(providerType) : renderDefaultProviderSummaryActions(providerType)}
                 </div>
 
                 <div class="provider-nodes-toolbar" style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
@@ -721,30 +835,6 @@ function showProviderManagerModal(data, initialSearchTerm = '') {
     
     // 添加到页面
     document.body.appendChild(modal);
-    if (isKiroProvider) {
-        const summaryActions = modal.querySelector('.provider-summary-actions');
-        const refreshButton = summaryActions?.querySelector('[onclick^="window.refreshUnhealthyUuids"]');
-        if (summaryActions && refreshButton) {
-            refreshButton.insertAdjacentHTML('beforebegin', `
-                <button class="btn btn-info" onclick="window.autoAssignProviderProxies('${providerType}')" title="${t('proxies.autoAssignTitle')}">
-                    <i class="fas fa-random"></i> <span data-i18n="proxies.autoAssign">${t('proxies.autoAssign')}</span>
-                </button>
-                <button class="btn btn-info" onclick="window.performHealthCheckAll('${providerType}')" title="${t('modal.provider.healthCheckAllTitle')}">
-                    <i class="fas fa-heartbeat"></i> <span data-i18n="modal.provider.healthCheckAll">${t('modal.provider.healthCheckAll')}</span>
-                </button>
-                <button class="btn btn-info" onclick="window.updateKiroStableNames('${providerType}')" title="${t('modal.provider.updateKiroNamesTitle')}">
-                    <i class="fas fa-signature"></i> <span data-i18n="modal.provider.updateKiroNames">${t('modal.provider.updateKiroNames')}</span>
-                </button>
-                <button class="btn btn-info" onclick="window.exportKiroRefreshTokens('${providerType}', false)" title="${t('modal.provider.exportRtAllTitle')}">
-                    <i class="fas fa-download"></i> <span data-i18n="modal.provider.exportRtAll">${t('modal.provider.exportRtAll')}</span>
-                </button>
-                <button class="btn btn-info" onclick="window.exportKiroRefreshTokens('${providerType}', true)" title="${t('modal.provider.exportRtHealthyTitle')}">
-                    <i class="fas fa-file-medical-alt"></i> <span data-i18n="modal.provider.exportRtHealthy">${t('modal.provider.exportRtHealthy')}</span>
-                </button>
-            `);
-            promoteKiroSummarySecondaryButtons(summaryActions);
-        }
-    }
     
     // 添加模态框事件监听
     addModalEventListeners(modal);

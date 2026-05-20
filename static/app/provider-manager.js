@@ -2391,7 +2391,19 @@ function showKiroBatchImportModal() {
             });
             
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                let message = `HTTP error! status: ${response.status}`;
+                try {
+                    const errorData = await response.json();
+                    message = errorData.error?.message || errorData.error || errorData.message || message;
+                } catch {
+                    try {
+                        const errorText = await response.text();
+                        message = errorText || message;
+                    } catch {
+                        // Use the generic HTTP status message.
+                    }
+                }
+                throw new Error(message);
             }
             
             const reader = response.body.getReader();

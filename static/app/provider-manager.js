@@ -51,6 +51,126 @@ async function refreshKiroProviderConsoleIfOpen() {
     }
 }
 
+const KIRO_REFRESH_TOKEN_KEY_NAMES = new Set(['refreshtoken']);
+
+function normalizeKiroJsonKey(key) {
+    return String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isKiroRefreshTokenKey(key) {
+    return KIRO_REFRESH_TOKEN_KEY_NAMES.has(normalizeKiroJsonKey(key));
+}
+
+function addKiroRefreshToken(tokens, seen, value) {
+    if (typeof value !== 'string') {
+        return;
+    }
+
+    const token = value.trim();
+    if (!token || seen.has(token)) {
+        return;
+    }
+
+    seen.add(token);
+    tokens.push(token);
+}
+
+function parseKiroJsonString(value) {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    if (!trimmed || !['{', '['].includes(trimmed[0])) {
+        return null;
+    }
+
+    try {
+        return JSON.parse(trimmed);
+    } catch {
+        return null;
+    }
+}
+
+function extractKiroRefreshTokensFromJsonPayload(payload) {
+    const tokens = [];
+    const seen = new Set();
+
+    const walk = (value) => {
+        if (value === null || value === undefined) {
+            return;
+        }
+
+        if (Array.isArray(value)) {
+            value.forEach(walk);
+            return;
+        }
+
+        if (typeof value === 'string') {
+            const parsed = parseKiroJsonString(value);
+            if (parsed !== null) {
+                walk(parsed);
+            }
+            return;
+        }
+
+        if (typeof value !== 'object') {
+            return;
+        }
+
+        Object.entries(value).forEach(([key, item]) => {
+            if (isKiroRefreshTokenKey(key)) {
+                addKiroRefreshToken(tokens, seen, item);
+            }
+            walk(item);
+        });
+    };
+
+    walk(payload);
+    return tokens;
+}
+
+function parseKiroBatchImportInput(rawInput) {
+    const input = String(rawInput || '').trim();
+    if (!input) {
+        return {
+            tokens: [],
+            payload: { refreshTokens: [] }
+        };
+    }
+
+    if (input.startsWith('{') || input.startsWith('[')) {
+        let parsed;
+        try {
+            parsed = JSON.parse(input);
+        } catch {
+            throw new Error(t('oauth.kiro.jsonParseError'));
+        }
+
+        return {
+            tokens: extractKiroRefreshTokensFromJsonPayload(parsed),
+            payload: { json: parsed }
+        };
+    }
+
+    const tokens = [];
+    const seen = new Set();
+    input.split(/\r?\n/).forEach(line => addKiroRefreshToken(tokens, seen, line));
+    return {
+        tokens,
+        payload: { refreshTokens: tokens }
+    };
+}
+
+function readKiroJsonFile(file) {
+    if (typeof file.text === 'function') {
+        return file.text();
+    }
+
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(reader.error || new Error(t('oauth.kiro.fileReadError')));
+        reader.readAsText(file);
+    });
+}
+
 function updateProvidersHandoffSummary(providers = {}, supportedProviders = []) {
     const providerGroups = Object.values(providers).filter(group => Array.isArray(group) && group.length > 0);
     const totalGroups = providerGroups.length;
@@ -2101,6 +2221,12 @@ function showKiroBatchImportModal() {
                     </p>
                 </div>
                 <div class="form-group">
+                    <input id="kiroBatchJsonFileInput" type="file" accept=".json,application/json" style="display: none;">
+                    <button type="button" class="btn btn-secondary" id="kiroBatchJsonFileBtn" style="margin-bottom: 10px;">
+                        <i class="fas fa-file-code"></i>
+                        <span data-i18n="oauth.kiro.importJsonFile">${t('oauth.kiro.importJsonFile')}</span>
+                    </button>
+                    <span id="kiroBatchJsonFileName" style="display: inline-block; margin-left: 8px; font-size: 12px; color: #6b7280;"></span>
                     <label for="batchRefreshTokens" style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">
                         <span data-i18n="oauth.kiro.refreshTokensLabel">${t('oauth.kiro.refreshTokensLabel')}</span>
                     </label>
@@ -2158,15 +2284,46 @@ function showKiroBatchImportModal() {
     const closeBtn = modal.querySelector('.modal-close');
     const cancelBtn = modal.querySelector('.modal-cancel');
     const refreshOnImportInput = modal.querySelector('#kiroRefreshOnImport');
+    const jsonFileInput = modal.querySelector('#kiroBatchJsonFileInput');
+    const jsonFileBtn = modal.querySelector('#kiroBatchJsonFileBtn');
+    const jsonFileName = modal.querySelector('#kiroBatchJsonFileName');
+
+    const updateTokenStats = () => {
+        try {
+            const { tokens } = parseKiroBatchImportInput(textarea.value);
+            if (tokens.length > 0) {
+                statsDiv.style.display = 'block';
+                tokenCountValue.textContent = tokens.length;
+            } else {
+                statsDiv.style.display = 'none';
+            }
+        } catch {
+            statsDiv.style.display = 'block';
+            tokenCountValue.textContent = t('oauth.kiro.jsonParseError');
+        }
+    };
     
     // 实时统计 token 数量
-    textarea.addEventListener('input', () => {
-        const tokens = textarea.value.split('\n').filter(line => line.trim());
-        if (tokens.length > 0) {
-            statsDiv.style.display = 'block';
-            tokenCountValue.textContent = tokens.length;
-        } else {
-            statsDiv.style.display = 'none';
+    textarea.addEventListener('input', updateTokenStats);
+
+    jsonFileBtn.addEventListener('click', () => {
+        jsonFileInput.click();
+    });
+
+    jsonFileInput.addEventListener('change', async () => {
+        const file = jsonFileInput.files?.[0];
+        if (!file) {
+            return;
+        }
+
+        try {
+            textarea.value = await readKiroJsonFile(file);
+            jsonFileName.textContent = file.name;
+            updateTokenStats();
+        } catch (error) {
+            showToast(t('common.error'), `${t('oauth.kiro.fileReadError')}: ${error.message}`, 'error');
+        } finally {
+            jsonFileInput.value = '';
         }
     });
     
@@ -2179,7 +2336,15 @@ function showKiroBatchImportModal() {
     
     // 提交按钮事件 - 使用 SSE 流式响应实时显示进度
     submitBtn.onclick = async () => {
-        const tokens = textarea.value.split('\n').filter(line => line.trim());
+        let importInput;
+        try {
+            importInput = parseKiroBatchImportInput(textarea.value);
+        } catch (error) {
+            showToast(t('common.error'), error.message, 'error');
+            return;
+        }
+
+        const { tokens, payload } = importInput;
         
         if (tokens.length === 0) {
             showToast(t('common.warning'), t('oauth.kiro.noTokens'), 'warning');
@@ -2220,7 +2385,7 @@ function showKiroBatchImportModal() {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    refreshTokens: tokens,
+                    ...payload,
                     refreshOnImport: refreshOnImportInput?.checked === true
                 })
             });

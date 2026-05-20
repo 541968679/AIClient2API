@@ -1,6 +1,11 @@
 import { getRequestBody } from '../utils/common.js';
 import logger from '../utils/logger.js';
 import {
+    extractRefreshTokensFromJsonPayload,
+    mergeRefreshTokenSources,
+    normalizeRefreshTokenList
+} from '../utils/refresh-token-extractor.js';
+import {
     handleGeminiCliOAuth,
     handleGeminiAntigravityOAuth,
     batchImportGeminiTokensStream,
@@ -186,13 +191,19 @@ export async function handleManualOAuthCallback(req, res) {
 export async function handleBatchImportKiroTokens(req, res) {
     try {
         const body = await getRequestBody(req);
-        const { refreshTokens, region, skipDuplicateCheck, refreshOnImport } = body;
+        const { refreshTokens: rawRefreshTokens, region, skipDuplicateCheck, refreshOnImport } = body;
+        const jsonSources = [body, body.json, body.jsonData, body.data, body.payload].filter(source => source !== undefined);
+        const extractedRefreshTokens = jsonSources.flatMap(source => extractRefreshTokensFromJsonPayload(source));
+        const refreshTokens = mergeRefreshTokenSources(
+            normalizeRefreshTokenList(rawRefreshTokens),
+            extractedRefreshTokens
+        );
         
-        if (!refreshTokens || !Array.isArray(refreshTokens) || refreshTokens.length === 0) {
+        if (refreshTokens.length === 0) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
                 success: false,
-                error: 'refreshTokens array is required and must not be empty'
+                error: 'refreshTokens array or JSON payload with refreshToken fields is required and must not be empty'
             }));
             return true;
         }

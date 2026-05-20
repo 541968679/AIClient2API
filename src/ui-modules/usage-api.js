@@ -1,6 +1,6 @@
 import { CONFIG } from '../core/config-manager.js';
 import logger from '../utils/logger.js';
-import { serviceInstances, getServiceAdapter, invalidateServiceAdapter } from '../providers/adapter.js';
+import { getServiceAdapter, invalidateServiceAdapter } from '../providers/adapter.js';
 import { formatKiroUsage, formatGeminiUsage, formatAntigravityUsage, formatCodexUsage, formatGrokUsage } from '../services/usage-service.js';
 import { readUsageCache, writeUsageCache, readProviderUsageCache, updateProviderUsageCache } from './usage-cache.js';
 import { PROVIDER_MAPPINGS } from '../utils/provider-utils.js';
@@ -108,8 +108,7 @@ async function getProviderTypeUsage(providerType, currentConfig, providerPoolMan
 
     // 遍历所有提供商实例获取用量
     for (const provider of providers) {
-        const providerKey = providerType + (provider.uuid || '');
-        let adapter = serviceInstances[providerKey];
+        let adapter = null;
         
         const instanceResult = {
             uuid: provider.uuid || 'unknown',
@@ -126,8 +125,8 @@ async function getProviderTypeUsage(providerType, currentConfig, providerPoolMan
         if (provider.isDisabled) {
             instanceResult.error = 'Provider is disabled';
             result.errorCount++;
-        } else if (!adapter) {
-            // Service instance not initialized, try auto-initialization
+        } else {
+            // Always go through the adapter factory so proxy changes can rebuild cached instances.
             try {
                 logger.info(`[Usage API] Auto-initializing service adapter for ${providerType}: ${provider.uuid}`);
                 // Build configuration object

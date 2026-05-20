@@ -11,6 +11,8 @@ import { ForwardApiService } from './forward/forward-core.js';
 import { GrokApiService } from './grok/grok-core.js';
 import { MODEL_PROVIDER } from '../utils/constants.js';
 import logger from '../utils/logger.js';
+import { isProxyEnabledForProvider } from '../utils/proxy-utils.js';
+import { redactProxyUrl, resolveProxyUrlForProviderConfig } from '../utils/proxy-registry.js';
 
 // 适配器注册表
 const adapterRegistry = new Map();
@@ -730,6 +732,36 @@ export function invalidateServiceAdapter(provider, uuid = null) {
     return false;
 }
 
+function resolveEffectiveProxyUrl(config, provider) {
+    const providerProxyUrl = resolveProxyUrlForProviderConfig(config, config);
+    if (providerProxyUrl) {
+        return providerProxyUrl;
+    }
+
+    if (config?.PROXY_URL && isProxyEnabledForProvider(config, provider)) {
+        return String(config.PROXY_URL).trim();
+    }
+
+    return '';
+}
+
+function prepareNetworkConfig(config, provider) {
+    const proxyUrl = resolveEffectiveProxyUrl(config, provider);
+    if (!proxyUrl) {
+        return {
+            serviceConfig: config,
+            proxySignature: ''
+        };
+    }
+
+    return {
+        serviceConfig: config.PROVIDER_PROXY_URL === proxyUrl
+            ? config
+            : { ...config, PROVIDER_PROXY_URL: proxyUrl },
+        proxySignature: proxyUrl
+    };
+}
+
 /**
  * 检查提供商是否已注册（支持前缀匹配）
  * @param {string} provider - 提供商名称
@@ -756,6 +788,13 @@ export function getServiceAdapter(config) {
     logger.info(`[Adapter] getServiceAdapter, provider: ${config.MODEL_PROVIDER}, uuid: ${config.uuid}${customNameDisplay}`);
     const provider = config.MODEL_PROVIDER;
     const providerKey = getServiceInstanceKey(provider, config.uuid);
+    const { serviceConfig, proxySignature } = prepareNetworkConfig(config, provider);
+    const existingProxySignature = serviceInstances[providerKey]?.__a2ProxySignature || '';
+
+    if (serviceInstances[providerKey] && existingProxySignature !== proxySignature) {
+        delete serviceInstances[providerKey];
+        logger.info(`[Adapter] Rebuilding service adapter for ${provider}, uuid: ${config.uuid || 'default'} because proxy changed to ${proxySignature ? redactProxyUrl(proxySignature) : 'direct'}`);
+    }
     
     if (!serviceInstances[providerKey]) {
         let AdapterClass = adapterRegistry.get(provider);
@@ -771,7 +810,11 @@ export function getServiceAdapter(config) {
         }
         
         if (AdapterClass) {
-            serviceInstances[providerKey] = new AdapterClass(config);
+            serviceInstances[providerKey] = new AdapterClass(serviceConfig);
+            Object.defineProperty(serviceInstances[providerKey], '__a2ProxySignature', {
+                value: proxySignature,
+                configurable: true
+            });
         } else {
             throw new Error(`Unsupported model provider: ${provider}`);
         }

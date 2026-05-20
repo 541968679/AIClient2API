@@ -9,6 +9,7 @@ import { autoLinkProviderConfigs } from '../services/service-manager.js';
 import { CONFIG } from '../core/config-manager.js';
 import { getProxyConfigForProvider } from '../utils/proxy-utils.js';
 import { createKiroAccountIdentity } from '../utils/account-fingerprint.js';
+import { normalizeKiroTokenResponse } from '../utils/kiro-token-response.js';
 
 /**
  * Kiro OAuth 配置（支持多种认证方式）
@@ -134,6 +135,42 @@ function createRefreshTokenOnlyCredentials(refreshToken, region = KIRO_REFRESH_C
         importMode: 'refresh-token-only',
         importedAt: new Date().toISOString()
     };
+}
+
+function normalizeCredentialPath(filePath) {
+    if (!filePath || typeof filePath !== 'string') {
+        return null;
+    }
+    return path.normalize(path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath));
+}
+
+async function loadProviderPoolsForDuplicateCheck() {
+    if (CONFIG?.providerPools && typeof CONFIG.providerPools === 'object') {
+        return CONFIG.providerPools;
+    }
+
+    const filePath = CONFIG?.PROVIDER_POOLS_FILE_PATH || 'configs/provider_pools.json';
+    try {
+        const content = await fs.promises.readFile(filePath, 'utf8');
+        return JSON.parse(content);
+    } catch {
+        return {};
+    }
+}
+
+async function getLinkedKiroCredentialPaths(provider = 'claude-kiro-oauth') {
+    const providerPools = await loadProviderPoolsForDuplicateCheck();
+    const linkedProviders = Array.isArray(providerPools?.[provider]) ? providerPools[provider] : [];
+    const paths = new Set();
+
+    for (const item of linkedProviders) {
+        const normalizedPath = normalizeCredentialPath(item?.KIRO_OAUTH_CREDS_FILE_PATH);
+        if (normalizedPath) {
+            paths.add(normalizedPath);
+        }
+    }
+
+    return paths;
 }
 
 async function saveKiroTokenData(tokenData) {
@@ -754,19 +791,20 @@ async function refreshKiroToken(refreshToken, region = KIRO_REFRESH_CONSTANTS.DE
         }
         
         const data = await response.json();
+        const normalizedToken = normalizeKiroTokenResponse(data, refreshToken);
         
-        if (!data.accessToken) {
+        if (!normalizedToken.accessToken) {
             throw new Error('Invalid refresh response: Missing accessToken');
         }
         
-        const expiresIn = data.expiresIn || 3600;
+        const expiresIn = normalizedToken.expiresIn;
         const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
         
         return {
-            accessToken: data.accessToken,
-            refreshToken: data.refreshToken || refreshToken,
-            ...createKiroAccountIdentity(refreshToken),
-            profileArn: data.profileArn || '',
+            accessToken: normalizedToken.accessToken,
+            refreshToken: normalizedToken.refreshToken,
+            ...createKiroAccountIdentity(normalizedToken.refreshToken),
+            profileArn: normalizedToken.profileArn || '',
             expiresAt: expiresAt,
             authMethod: KIRO_REFRESH_CONSTANTS.AUTH_METHOD_SOCIAL,
             provider: KIRO_REFRESH_CONSTANTS.DEFAULT_PROVIDER,
@@ -788,6 +826,37 @@ async function refreshKiroToken(refreshToken, region = KIRO_REFRESH_CONSTANTS.DE
  * @returns {Promise<{isDuplicate: boolean, existingPath?: string}>} 检查结果
  */
 export async function checkKiroCredentialsDuplicate(refreshToken, provider = 'claude-kiro-oauth') {
+    try {
+        const linkedPaths = await getLinkedKiroCredentialPaths(provider);
+        if (linkedPaths.size === 0) {
+            return { isDuplicate: false };
+        }
+
+        for (const fullPath of linkedPaths) {
+            try {
+                const content = await fs.promises.readFile(fullPath, 'utf8');
+                const credentials = JSON.parse(content);
+                const existingRefreshToken = credentials.refreshToken || credentials.refresh_token;
+
+                if (existingRefreshToken && existingRefreshToken === refreshToken) {
+                    const relativePath = path.relative(process.cwd(), fullPath).replace(/\\/g, '/');
+                    logger.info(`${KIRO_OAUTH_CONFIG.logPrefix} Found duplicate refreshToken in linked credential: ${relativePath}`);
+                    return {
+                        isDuplicate: true,
+                        existingPath: relativePath
+                    };
+                }
+            } catch (parseError) {
+                logger.debug(`${KIRO_OAUTH_CONFIG.logPrefix} Skipping linked credential during duplicate check: ${fullPath} (${parseError.message})`);
+            }
+        }
+
+        return { isDuplicate: false };
+    } catch (error) {
+        logger.warn(`${KIRO_OAUTH_CONFIG.logPrefix} Error checking linked duplicates:`, error.message);
+        return { isDuplicate: false };
+    }
+
     const kiroDir = path.join(process.cwd(), 'configs', 'kiro');
     
     try {
@@ -1081,12 +1150,19 @@ export async function batchImportKiroRefreshTokensStream(refreshTokens, region =
  */
 export async function importAwsCredentials(credentials, skipDuplicateCheck = false) {
     try {
+        const inputCredentials = {
+            clientId: credentials.clientId || credentials.client_id,
+            clientSecret: credentials.clientSecret || credentials.client_secret,
+            accessToken: credentials.accessToken || credentials.access_token,
+            refreshToken: credentials.refreshToken || credentials.refresh_token
+        };
+
         // 验证必需字段 - 需要四个字段都存在
         const missingFields = [];
-        if (!credentials.clientId) missingFields.push('clientId');
-        if (!credentials.clientSecret) missingFields.push('clientSecret');
-        if (!credentials.accessToken) missingFields.push('accessToken');
-        if (!credentials.refreshToken) missingFields.push('refreshToken');
+        if (!inputCredentials.clientId) missingFields.push('clientId');
+        if (!inputCredentials.clientSecret) missingFields.push('clientSecret');
+        if (!inputCredentials.accessToken) missingFields.push('accessToken');
+        if (!inputCredentials.refreshToken) missingFields.push('refreshToken');
         
         if (missingFields.length > 0) {
             return {
@@ -1097,7 +1173,7 @@ export async function importAwsCredentials(credentials, skipDuplicateCheck = fal
         
         // 检查重复凭据
         if (!skipDuplicateCheck) {
-            const duplicateCheck = await checkKiroCredentialsDuplicate(credentials.refreshToken);
+            const duplicateCheck = await checkKiroCredentialsDuplicate(inputCredentials.refreshToken);
             if (duplicateCheck.isDuplicate) {
                 return {
                     success: false,
@@ -1111,11 +1187,11 @@ export async function importAwsCredentials(credentials, skipDuplicateCheck = fal
         
         // 准备凭据数据 - 四个字段都是必需的
         const credentialsData = {
-            clientId: credentials.clientId,
-            clientSecret: credentials.clientSecret,
-            accessToken: credentials.accessToken,
-            refreshToken: credentials.refreshToken,
-            ...createKiroAccountIdentity(credentials.refreshToken),
+            clientId: inputCredentials.clientId,
+            clientSecret: inputCredentials.clientSecret,
+            accessToken: inputCredentials.accessToken,
+            refreshToken: inputCredentials.refreshToken,
+            ...createKiroAccountIdentity(inputCredentials.refreshToken),
             authMethod: credentials.authMethod || 'builder-id',
             // region: credentials.region || KIRO_REFRESH_CONSTANTS.DEFAULT_REGION,
             idcRegion: credentials.idcRegion || KIRO_REFRESH_CONSTANTS.IDC_REGION
@@ -1145,19 +1221,27 @@ export async function importAwsCredentials(credentials, skipDuplicateCheck = fal
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    refreshToken: credentials.refreshToken,
-                    clientId: credentials.clientId,
-                    clientSecret: credentials.clientSecret,
+                    refreshToken: inputCredentials.refreshToken,
+                    clientId: inputCredentials.clientId,
+                    clientSecret: inputCredentials.clientSecret,
                     grantType: 'refresh_token'
                 })
             }, 'claude-kiro-oauth');
             
             if (refreshResponse.ok) {
                 const tokenData = await refreshResponse.json();
-                credentialsData.accessToken = tokenData.accessToken;
-                credentialsData.refreshToken = tokenData.refreshToken;
-                const expiresIn = tokenData.expiresIn || 3600;
+                const normalizedToken = normalizeKiroTokenResponse(tokenData, credentialsData.refreshToken);
+                if (!normalizedToken.accessToken) {
+                    throw new Error('Invalid refresh response: Missing accessToken');
+                }
+                credentialsData.accessToken = normalizedToken.accessToken;
+                credentialsData.refreshToken = normalizedToken.refreshToken;
+                Object.assign(credentialsData, createKiroAccountIdentity(credentialsData.refreshToken));
+                const expiresIn = normalizedToken.expiresIn;
                 credentialsData.expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+                if (normalizedToken.profileArn) {
+                    credentialsData.profileArn = normalizedToken.profileArn;
+                }
                 logger.info(`${KIRO_OAUTH_CONFIG.logPrefix} Token refreshed successfully`);
             } else {
                 logger.warn(`${KIRO_OAUTH_CONFIG.logPrefix} Token refresh failed, saving original credentials`);

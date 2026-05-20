@@ -19,6 +19,7 @@ import {
 import { configureAxiosProxy, configureTLSSidecar, isTLSSidecarEnabledForProvider } from '../../utils/proxy-utils.js';
 import { isRetryableNetworkError, MODEL_PROVIDER, formatExpiryLog } from '../../utils/common.js';
 import { getProviderPoolManager } from '../../services/service-manager.js';
+import { normalizeKiroTokenResponse } from '../../utils/kiro-token-response.js';
 
 const KIRO_THINKING = {
     MIN_BUDGET_TOKENS: 1024,
@@ -1153,14 +1154,19 @@ async saveCredentialsToFile(filePath, newData) {
                 logger.info('[Kiro Auth] Token refresh idc response: ok');
             }
 
-            if (response.data && response.data.accessToken) {
-                this.accessToken = response.data.accessToken;
-                this.refreshToken = response.data.refreshToken || this.refreshToken;
-                this.profileArn = response.data.profileArn || this.profileArn;
-                const expiresIn = Number(response.data.expiresIn) || 3600;
+            const tokenData = normalizeKiroTokenResponse(response.data, this.refreshToken);
+            if (tokenData.accessToken) {
+                const previousRefreshToken = this.refreshToken;
+                this.accessToken = tokenData.accessToken;
+                this.refreshToken = tokenData.refreshToken || this.refreshToken;
+                this.profileArn = tokenData.profileArn || this.profileArn;
+                const expiresIn = tokenData.expiresIn;
                 const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
                 this.expiresAt = expiresAt;
                 logger.info('[Kiro Auth] Access token refreshed successfully');
+                if (this.refreshToken !== previousRefreshToken) {
+                    logger.info('[Kiro Auth] Refresh token rotated and will be written to credentials file');
+                }
 
                 const updatedTokenData = {
                     accessToken: this.accessToken,

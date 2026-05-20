@@ -406,7 +406,7 @@ export async function handleForceExpireConfig(req, res, filePath, currentConfig,
                 for (const usage of targetFile.usageInfo.usageDetails) {
                     if (usage.uuid && usage.providerType) {
                         // 强制触发刷新
-                        const success = await providerPoolManager.refreshNode(usage.providerType, usage.uuid, true);
+                        const success = await providerPoolManager.refreshNode(usage.providerType, usage.uuid, true, { wait: true });
                         if (success) refreshCount++;
                     }
                 }

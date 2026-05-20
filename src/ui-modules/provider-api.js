@@ -24,6 +24,82 @@ import { createKiroAccountIdentity } from '../utils/account-fingerprint.js';
 
 const KIRO_PROVIDER_TYPE = 'claude-kiro-oauth';
 
+function getProviderCredentialFilePaths(provider) {
+    if (!provider || typeof provider !== 'object') return [];
+    return Object.entries(provider)
+        .filter(([key, value]) => (
+            typeof value === 'string' &&
+            value.trim() &&
+            (key.endsWith('_CREDS_FILE_PATH') || key.endsWith('_TOKEN_FILE_PATH'))
+        ))
+        .map(([, value]) => value);
+}
+
+function getCredentialPathKey(filePath) {
+    const fullPath = resolveConfigFilePath(filePath);
+    if (!fullPath) return null;
+    return path.normalize(fullPath);
+}
+
+function collectCredentialPathKeys(providerPools = {}) {
+    const keys = new Set();
+    for (const providers of Object.values(providerPools)) {
+        if (!Array.isArray(providers)) continue;
+        for (const provider of providers) {
+            for (const filePath of getProviderCredentialFilePaths(provider)) {
+                const key = getCredentialPathKey(filePath);
+                if (key) keys.add(key);
+            }
+        }
+    }
+    return keys;
+}
+
+async function cleanupDeletedProviderCredentials(deletedProviders, remainingProviderPools) {
+    const remainingCredentialKeys = collectCredentialPathKeys(remainingProviderPools);
+    const deletedCredentialFiles = [];
+    const skippedCredentialFiles = [];
+    const failedCredentialFiles = [];
+    const processedKeys = new Set();
+
+    for (const provider of deletedProviders) {
+        for (const configuredPath of getProviderCredentialFilePaths(provider)) {
+            const fullPath = resolveConfigFilePath(configuredPath);
+            const pathKey = getCredentialPathKey(configuredPath);
+            if (!fullPath || !pathKey || processedKeys.has(pathKey)) continue;
+            processedKeys.add(pathKey);
+
+            const relativePath = path.relative(process.cwd(), fullPath).replace(/\\/g, '/');
+
+            if (!isPathInConfigsDirectory(fullPath)) {
+                skippedCredentialFiles.push({ path: configuredPath, reason: 'outside_configs_directory' });
+                continue;
+            }
+
+            if (remainingCredentialKeys.has(pathKey)) {
+                skippedCredentialFiles.push({ path: relativePath, reason: 'still_referenced' });
+                continue;
+            }
+
+            if (!existsSync(fullPath)) {
+                skippedCredentialFiles.push({ path: relativePath, reason: 'missing' });
+                continue;
+            }
+
+            try {
+                await fs.unlink(fullPath);
+                deletedCredentialFiles.push(relativePath);
+                logger.info(`[UI API] Deleted unreferenced credential file: ${relativePath}`);
+            } catch (error) {
+                failedCredentialFiles.push({ path: relativePath, error: error.message });
+                logger.warn(`[UI API] Failed to delete credential file ${relativePath}: ${error.message}`);
+            }
+        }
+    }
+
+    return { deletedCredentialFiles, skippedCredentialFiles, failedCredentialFiles };
+}
+
 
 
 // 文件级互斥锁：防止并发读写导致数据丢失
@@ -847,6 +923,7 @@ async function _handleDeleteProvider(req, res, currentConfig, providerPoolManage
 
         // Save to file
         await atomicWriteFile(filePath, JSON.stringify(providerPools, null, 2), 'utf-8');
+        const credentialCleanup = await cleanupDeletedProviderCredentials([deletedProvider], providerPools);
         logger.info(`[UI API] Deleted provider ${providerUuid} from ${providerType}`);
         invalidateServiceAdapter(providerType, providerUuid);
 
@@ -854,6 +931,9 @@ async function _handleDeleteProvider(req, res, currentConfig, providerPoolManage
         if (providerPoolManager) {
             providerPoolManager.providerPools = providerPools;
             providerPoolManager.initializeProviderStatus();
+        }
+        if (currentConfig) {
+            currentConfig.providerPools = providerPools;
         }
 
         // 广播更新事件
@@ -869,7 +949,8 @@ async function _handleDeleteProvider(req, res, currentConfig, providerPoolManage
         res.end(JSON.stringify({
             success: true,
             message: 'Provider deleted successfully',
-            deletedProvider: sanitizeProviderData(deletedProvider)
+            deletedProvider: sanitizeProviderData(deletedProvider),
+            credentialCleanup
         }));
         return true;
     } catch (error) {
@@ -1136,12 +1217,16 @@ async function _handleDeleteUnhealthyProviders(req, res, currentConfig, provider
 
         // Save to file
         await atomicWriteFile(filePath, JSON.stringify(providerPools, null, 2), 'utf-8');
+        const credentialCleanup = await cleanupDeletedProviderCredentials(unhealthyProviders, providerPools);
         logger.info(`[UI API] Deleted ${unhealthyProviders.length} unhealthy providers from ${providerType}`);
 
         // Update provider pool manager if available
         if (providerPoolManager) {
             providerPoolManager.providerPools = providerPools;
             providerPoolManager.initializeProviderStatus();
+        }
+        if (currentConfig) {
+            currentConfig.providerPools = providerPools;
         }
 
         // 广播更新事件
@@ -1160,7 +1245,8 @@ async function _handleDeleteUnhealthyProviders(req, res, currentConfig, provider
             message: `Successfully deleted ${unhealthyProviders.length} unhealthy providers`,
             deletedCount: unhealthyProviders.length,
             remainingCount: healthyProviders.length,
-            deletedProviders: unhealthyProviders.map(p => ({ uuid: p.uuid, customName: p.customName }))
+            deletedProviders: unhealthyProviders.map(p => ({ uuid: p.uuid, customName: p.customName })),
+            credentialCleanup
         }));
         return true;
     } catch (error) {

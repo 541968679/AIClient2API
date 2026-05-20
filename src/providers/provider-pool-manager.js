@@ -123,10 +123,27 @@ export class ProviderPoolManager {
      * @param {string} uuid 
      * @param {boolean} force 
      */
-    async refreshNode(providerType, uuid, force = true) {
+    async refreshNode(providerType, uuid, force = true, options = {}) {
         const provider = this._findProvider(providerType, uuid);
         if (provider) {
             this._log('info', `Manually triggering refresh for node ${uuid} (${providerType})`);
+            if (options?.wait === true) {
+                if (provider.config.isDisabled) {
+                    this._log('debug', `Skipping refresh for disabled node ${uuid}`);
+                    return false;
+                }
+                if (this.refreshingUuids.has(uuid)) {
+                    this._log('debug', `Node ${uuid} is already in refresh queue.`);
+                    return false;
+                }
+                this.refreshingUuids.add(uuid);
+                try {
+                    await this._refreshNodeToken(providerType, provider, force);
+                    return true;
+                } finally {
+                    this.refreshingUuids.delete(uuid);
+                }
+            }
             this._enqueueRefresh(providerType, provider, force);
             return true;
         }

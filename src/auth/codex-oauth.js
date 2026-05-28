@@ -665,8 +665,42 @@ export async function batchImportCodexTokensStream(tokens, onProgress = null, sk
         details: []
     };
 
+    const normalizeImportToken = (tokenData) => {
+        if (typeof tokenData === 'string') {
+            const refreshToken = tokenData.trim();
+            return refreshToken ? { refresh_token: refreshToken } : {};
+        }
+
+        if (!tokenData || typeof tokenData !== 'object') {
+            return {};
+        }
+
+        return {
+            ...tokenData,
+            refresh_token: tokenData.refresh_token || tokenData.refreshToken
+        };
+    };
+
+    const skipDuplicate = async (progressData, duplicateCheck) => {
+        progressData.current = {
+            index: progressData.index,
+            success: false,
+            error: 'duplicate',
+            existingPath: duplicateCheck.existingPath
+        };
+        results.failed++;
+        results.details.push(progressData.current);
+        if (onProgress) {
+            onProgress({
+                ...progressData,
+                successCount: results.success,
+                failedCount: results.failed
+            });
+        }
+    };
+
     for (let i = 0; i < tokens.length; i++) {
-        const tokenData = tokens[i];
+        const tokenData = normalizeImportToken(tokens[i]);
         const progressData = {
             index: i + 1,
             total: tokens.length,
@@ -675,49 +709,52 @@ export async function batchImportCodexTokensStream(tokens, onProgress = null, sk
 
         try {
             // 验证 token 数据
-            if (!tokenData.access_token || !tokenData.id_token) {
-                throw new Error('Token 缺少必需字段 (access_token 或 id_token)');
+            const hasFullTokenData = !!(tokenData.access_token && tokenData.id_token);
+            const hasRefreshToken = !!tokenData.refresh_token;
+            if (!hasFullTokenData && !hasRefreshToken) {
+                throw new Error('Token must include refresh_token or both access_token and id_token');
             }
 
-            // 解析 JWT 提取账户信息
-            const claims = auth.parseJWT(tokenData.id_token);
-            const accountId = claims['https://api.openai.com/auth']?.chatgpt_account_id || claims.sub;
-            const email = claims.email;
-
-            // 检查重复
-            if (!skipDuplicateCheck) {
-                const duplicateCheck = await auth.checkDuplicate(accountId, tokenData.refresh_token);
+            if (!skipDuplicateCheck && hasRefreshToken) {
+                const duplicateCheck = await auth.checkDuplicate(null, tokenData.refresh_token);
                 if (duplicateCheck.isDuplicate) {
-                    progressData.current = {
-                        index: i + 1,
-                        success: false,
-                        error: 'duplicate',
-                        existingPath: duplicateCheck.existingPath
-                    };
-                    results.failed++;
-                    results.details.push(progressData.current);
-                    if (onProgress) {
-                        onProgress({
-                            ...progressData,
-                            successCount: results.success,
-                            failedCount: results.failed
-                        });
-                    }
+                    await skipDuplicate(progressData, duplicateCheck);
                     continue;
                 }
             }
 
-            // 构建凭据对象
-            const credentials = {
-                id_token: tokenData.id_token,
-                access_token: tokenData.access_token,
-                refresh_token: tokenData.refresh_token,
-                account_id: accountId,
-                last_refresh: new Date().toISOString(),
-                email: email,
-                type: 'codex',
-                expired: new Date(Date.now() + (tokenData.expires_in || 3600) * 1000).toISOString()
-            };
+            let credentials;
+
+            if (!hasFullTokenData) {
+                logger.info(`${CODEX_OAUTH_CONFIG.logPrefix} Token ${i + 1} contains refresh_token only, refreshing before import...`);
+                credentials = await auth.refreshTokens(tokenData.refresh_token);
+            } else {
+                // 解析 JWT 提取账户信息
+                const claims = auth.parseJWT(tokenData.id_token);
+                const accountId = claims['https://api.openai.com/auth']?.chatgpt_account_id || claims.sub;
+                const email = claims.email;
+
+                // 构建凭据对象
+                credentials = {
+                    id_token: tokenData.id_token,
+                    access_token: tokenData.access_token,
+                    refresh_token: tokenData.refresh_token,
+                    account_id: accountId,
+                    last_refresh: new Date().toISOString(),
+                    email: email,
+                    type: 'codex',
+                    expired: new Date(Date.now() + (tokenData.expires_in || 3600) * 1000).toISOString()
+                };
+            }
+
+            // 检查重复
+            if (!skipDuplicateCheck) {
+                const duplicateCheck = await auth.checkDuplicate(credentials.account_id, credentials.refresh_token);
+                if (duplicateCheck.isDuplicate) {
+                    await skipDuplicate(progressData, duplicateCheck);
+                    continue;
+                }
+            }
 
             // 保存凭据
             const saveResult = await auth.saveCredentials(credentials);

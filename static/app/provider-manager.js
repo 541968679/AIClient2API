@@ -1131,25 +1131,21 @@ function showCodexBatchImportModal(providerType) {
                         </summary>
                         <div style="padding: 12px; background: #1f2937; border-radius: 0 0 8px 8px;">
                             <div style="color: #10b981; font-family: monospace; font-size: 12px;">
-                                <div style="color: #9ca3af; margin-bottom: 8px;">// 单个凭据导入示例：</div>
+                                <div style="color: #9ca3af; margin-bottom: 8px;">// refresh_token-only 导入示例：</div>
                                 <pre style="margin: 0; white-space: pre; overflow-x: auto;">{
-  "access_token": "eyJhbG...",
-  "id_token": "eyJhbG...",
-  "refresh_token": "...",
-  "token_type": "Bearer",
-  "expires_in": 3600
+  "refresh_token": "rt_..."
 }</pre>
                             </div>
                             <div style="color: #10b981; font-family: monospace; font-size: 12px; margin-top: 16px;">
                                 <div style="color: #9ca3af; margin-bottom: 8px;">// 批量导入示例（JSON数组）：</div>
                                 <pre style="margin: 0; white-space: pre; overflow-x: auto;">[
   {
-    "access_token": "token1...",
-    "id_token": "id1..."
+    "refresh_token": "rt_1..."
   },
   {
     "access_token": "token2...",
-    "id_token": "id2..."
+    "id_token": "id2...",
+    "refresh_token": "rt_2..."
   }
 ]</pre>
                             </div>
@@ -1194,17 +1190,27 @@ function showCodexBatchImportModal(providerType) {
     const submitBtn = modal.querySelector('#codexBatchSubmit');
     const closeBtn = modal.querySelector('.modal-close');
     const cancelBtn = modal.querySelector('.modal-cancel');
+
+    const parseCodexTokenInput = () => {
+        const val = textarea.value.trim();
+        if (!val) return [];
+
+        try {
+            const data = JSON.parse(val);
+            return Array.isArray(data) ? data : [data];
+        } catch (e) {
+            if (/^[\[{]/.test(val)) {
+                throw e;
+            }
+            return val.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+        }
+    };
     
     // 实时统计 token 数量
     textarea.addEventListener('input', () => {
         try {
-            const val = textarea.value.trim();
-            if (!val) {
-                statsDiv.style.display = 'none';
-                return;
-            }
-            const data = JSON.parse(val);
-            const tokens = Array.isArray(data) ? data : [data];
+            const tokens = parseCodexTokenInput();
+            if (tokens.length === 0) throw new Error('empty');
             statsDiv.style.display = 'block';
             tokenCountValue.textContent = tokens.length;
         } catch (e) {
@@ -1223,9 +1229,7 @@ function showCodexBatchImportModal(providerType) {
     submitBtn.onclick = async () => {
         let tokens = [];
         try {
-            const val = textarea.value.trim();
-            const data = JSON.parse(val);
-            tokens = Array.isArray(data) ? data : [data];
+            tokens = parseCodexTokenInput();
         } catch (e) {
             showToast(t('common.error'), t('oauth.codex.noTokens'), 'error');
             return;

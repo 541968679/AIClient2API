@@ -366,13 +366,31 @@ export async function handleBatchImportGeminiTokens(req, res) {
 export async function handleBatchImportCodexTokens(req, res) {
     try {
         const body = await getRequestBody(req);
-        const { tokens, skipDuplicateCheck } = body;
+        const { tokens: rawTokens, refreshTokens: rawRefreshTokens, skipDuplicateCheck } = body;
+        const directTokens = Array.isArray(body)
+            ? body
+            : (typeof body === 'string'
+                ? [body]
+                : (Array.isArray(rawTokens) ? rawTokens : (rawTokens !== undefined ? [rawTokens] : [])));
+        const jsonSources = [body.json, body.jsonData, body.data, body.payload].filter(source => source !== undefined);
+        if (!Array.isArray(body) && rawTokens === undefined && rawRefreshTokens === undefined) {
+            jsonSources.push(body);
+        }
+        const extractedRefreshTokens = jsonSources.flatMap(source => extractRefreshTokensFromJsonPayload(source));
+        const refreshTokens = mergeRefreshTokenSources(
+            normalizeRefreshTokenList(rawRefreshTokens),
+            extractedRefreshTokens
+        );
+        const tokens = [
+            ...directTokens,
+            ...refreshTokens
+        ];
 
-        if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
+        if (tokens.length === 0) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
                 success: false,
-                error: 'tokens array is required and must not be empty'
+                error: 'tokens array, refreshTokens array, or JSON payload with refresh_token fields is required and must not be empty'
             }));
             return true;
         }

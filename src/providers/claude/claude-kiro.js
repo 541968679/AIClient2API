@@ -2891,7 +2891,7 @@ async saveCredentialsToFile(filePath, newData) {
             let currentToolCall = null; // 用于累积结构化工具调用
             const toolUseBlockIndexes = new Map(); // toolUseId -> content block index
 
-            const estimatedInputTokens = 0;
+            const estimatedInputTokens = this.estimateInputTokens(requestBody);
 
             // 1. 先发送 message_start 事件（usage 占位，真实值在 message_delta）
             yield {

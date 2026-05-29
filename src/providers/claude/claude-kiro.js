@@ -2813,6 +2813,12 @@ async saveCredentialsToFile(filePath, newData) {
             hasVisibleText: false,
             hasThinkingContent: false,
         };
+        let emittedOutputCharCount = 0;
+
+        const addEmittedOutputChars = (value) => {
+            if (typeof value !== 'string' || value.length === 0) return;
+            emittedOutputCharCount += value.length;
+        };
 
         const ensureBlockStart = (blockType) => {
             if (blockType === 'thinking') {
@@ -2854,6 +2860,7 @@ async saveCredentialsToFile(filePath, newData) {
             events.push(...ensureBlockStart('text'));
             // 将转义的换行符转换为真实换行符，确保流式输出显示正常
             const decodedText = text.replace(/(?<!\\)\\n/g, '\n');
+            addEmittedOutputChars(decodedText);
             events.push({
                 type: "content_block_delta",
                 index: streamState.textBlockIndex,
@@ -2870,6 +2877,7 @@ async saveCredentialsToFile(filePath, newData) {
             events.push(...ensureBlockStart('thinking'));
             // 将转义的换行符转换为真实换行符
             const decodedThinking = thinking.replace(/(?<!\\)\\n/g, '\n');
+            addEmittedOutputChars(decodedThinking);
             events.push({
                 type: "content_block_delta",
                 index: streamState.thinkingBlockIndex,
@@ -3037,6 +3045,8 @@ async saveCredentialsToFile(filePath, newData) {
                     // 统计工具调用的内容到 totalContent（用于 token 计算）
                     if (tc.name) totalContent += tc.name;
                     if (tc.input) totalContent += tc.input;
+                    addEmittedOutputChars(tc.name);
+                    addEmittedOutputChars(tc.input);
 
                     // 工具调用事件（包含 name 和 toolUseId）
                     if (tc.name && tc.toolUseId) {
@@ -3135,6 +3145,7 @@ async saveCredentialsToFile(filePath, newData) {
                     // 统计 input 内容到 totalContent（用于 token 计算）
                     if (inputDelta) {
                         totalContent += inputDelta;
+                        addEmittedOutputChars(inputDelta);
                     }
                     if (currentToolCall) {
                         currentToolCall.input += inputDelta;
@@ -3265,6 +3276,11 @@ async saveCredentialsToFile(filePath, newData) {
 
             for (const tc of toolCalls) {
                 outputTokens += this.countTextTokens(JSON.stringify(tc.input || {}));
+            }
+
+            if (outputTokens <= 0 && emittedOutputCharCount > 0) {
+                outputTokens = Math.max(1, Math.ceil(emittedOutputCharCount / 4));
+                logger.warn(`[Kiro Stream] output token fallback used: chars=${emittedOutputCharCount}, tokens=${outputTokens}`);
             }
 
             // 计算 input tokens

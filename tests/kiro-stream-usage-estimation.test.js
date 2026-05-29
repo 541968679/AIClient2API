@@ -66,4 +66,42 @@ describe('Kiro stream usage estimation', () => {
         expect(messageDelta.usage.output_tokens).toBeGreaterThan(0);
         expect(events.at(-1)).toEqual({ type: 'message_stop' });
     });
+
+    test('falls back to emitted output characters when token counting returns zero', async () => {
+        const service = new KiroApiService({
+            MODEL_PROVIDER: 'claude-kiro-oauth'
+        });
+        service.isInitialized = true;
+        service.isExpiryDateNear = jest.fn(() => false);
+        service._ensureAccessTokenForRequest = jest.fn(async () => {});
+        service.streamApiReal = jest.fn(async function* () {
+            yield { type: 'content', content: 'fallback text' };
+        });
+        service.countTextTokens = jest.fn(() => 0);
+
+        const requestBody = {
+            model: 'claude-opus-4-8',
+            max_tokens: 16,
+            stream: true,
+            system: 'You are concise.',
+            messages: [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'Reply with fallback text.' }
+                    ]
+                }
+            ]
+        };
+
+        const events = [];
+        for await (const event of service.generateContentStream('claude-opus-4-8', requestBody)) {
+            events.push(event);
+        }
+
+        const messageDelta = events.find(event => event.type === 'message_delta');
+        expect(messageDelta).toBeDefined();
+        expect(messageDelta.usage.output_tokens).toBe(Math.ceil('fallback text'.length / 4));
+        expect(events.at(-1)).toEqual({ type: 'message_stop' });
+    });
 });

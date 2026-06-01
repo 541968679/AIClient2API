@@ -1,5 +1,47 @@
 # Custom Change Log
 
+## 2026-06-01 - Kiro Opus 4.8 text-only stream fallback and frame parsing
+
+Changed `src/providers/claude/claude-kiro.js` so Kiro streams that send visible
+assistant text in `text` payloads instead of `content` payloads no longer finish
+as empty Claude responses, and so binary AWS event stream frames are parsed by
+frame boundaries before scanning payload JSON.
+
+What changed:
+
+- Added a `text` fallback event path in the Kiro AWS event stream parser.
+- Buffered `text` fallback chunks and emitted them as Claude content only when
+  the stream completed without any normal `content` or tool output, avoiding
+  duplicate output on normal mixed streams.
+- Treated empty or whitespace-only `content` fields as non-visible when a Kiro
+  event also contains visible `text`, so those placeholder fields no longer
+  suppress the fallback path.
+- Kept the Kiro stream buffer as bytes and parsed plausible AWS event stream
+  frame boundaries before decoding payload JSON, preventing binary headers or
+  split frame preludes from blocking later visible output.
+- Added focused coverage in `tests/kiro-stream-usage-estimation.test.js` for
+  text-only streams, mixed text/content streams, and empty-content/text
+  fallback streams, binary AWS frames, and split-frame buffering.
+
+Verification:
+
+- `node --check src\providers\claude\claude-kiro.js`
+- `npx jest --runInBand --runTestsByPath tests/kiro-stream-usage-estimation.test.js`
+- `npx jest --runInBand --runTestsByPath tests\claude-kiro-request.test.js tests\kiro-provider-leak-sanitization.test.js tests\kiro-stream-usage-estimation.test.js`
+- Restarted the local Sub2API dev stack with `scripts\dev-stack.cmd restart`.
+- Local real Claude Code `claude-opus-4-8` `--print --output-format stream-json`
+  test through Sub2API: 6 independent requests, 0 client-empty responses.
+- Local real Claude Code interactive CLI test through Sub2API: ordinary TTY
+  sessions produced `external, cli` usage rows with visible output.
+- Sub2API usage log check after the restart: 18 `claude-opus-4-8` records,
+  including 6 `external, cli` records, 0 records with `output_tokens=0`.
+- Local `claude-opus-4-6` non-regression stream test through Sub2API returned
+  visible SSE content and usage row `15667` with `output_tokens=27`.
+- A2 logs after the restart showed no new Kiro empty-output diagnostic entries.
+- Added `docs/KIRO_OPUS_47_48_EMPTY_STREAM_DEBUG_2026-06-01.md` to record the
+  investigation, failed hypotheses, fix shape, verification, and residual
+  diagnostic plan.
+
 ## 2026-06-01 - Kiro explicit-history conversation isolation
 
 Changed `src/providers/claude/claude-kiro.js` so Claude Code requests that

@@ -2520,7 +2520,111 @@ ${identityGuardInstruction}
      * 解析 AWS Event Stream 格式，提取所有完整的 JSON 事件
      * 返回 { events: 解析出的事件数组, remaining: 未处理完的缓冲区 }
      */
-    parseAwsEventStreamBuffer(buffer) {
+    _recordKiroStreamParseDiagnostic(diagnostics, parsed) {
+        if (!diagnostics || !parsed || typeof parsed !== 'object') return;
+
+        diagnostics.jsonObjects++;
+        const keys = Object.keys(parsed).sort();
+        const signature = keys.join(',');
+        diagnostics.keySignatures[signature] = (diagnostics.keySignatures[signature] || 0) + 1;
+
+        if (parsed.content !== undefined) {
+            diagnostics.contentFields++;
+            diagnostics.contentChars += typeof parsed.content === 'string' ? parsed.content.length : 0;
+        }
+        if (parsed.text !== undefined) {
+            diagnostics.textFields++;
+            diagnostics.textChars += typeof parsed.text === 'string' ? parsed.text.length : 0;
+        }
+        if (parsed.input !== undefined) {
+            diagnostics.inputFields++;
+            diagnostics.inputChars += typeof parsed.input === 'string' ? parsed.input.length : 0;
+        }
+        if (parsed.name !== undefined) diagnostics.nameFields++;
+        if (parsed.toolUseId !== undefined) diagnostics.toolUseIdFields++;
+        if (parsed.stop !== undefined) diagnostics.stopFields++;
+        if (parsed.contextUsagePercentage !== undefined) diagnostics.contextUsageFields++;
+        if (parsed.followupPrompt !== undefined) diagnostics.followupPromptFields++;
+    }
+
+    _isPlausibleAwsEventStreamFrame(buffer, offset) {
+        if (!Buffer.isBuffer(buffer) || offset + 12 > buffer.length) return false;
+        const totalLength = buffer.readUInt32BE(offset);
+        const headersLength = buffer.readUInt32BE(offset + 4);
+        const maxFrameLength = 16 * 1024 * 1024;
+        return totalLength >= 16 &&
+            totalLength <= maxFrameLength &&
+            headersLength <= totalLength - 16;
+    }
+
+    _findNextAwsEventStreamFrameOffset(buffer, startOffset) {
+        for (let offset = startOffset; offset + 12 <= buffer.length; offset++) {
+            if (this._isPlausibleAwsEventStreamFrame(buffer, offset)) {
+                return offset;
+            }
+        }
+        return -1;
+    }
+
+    _parseAwsEventStreamByteBuffer(buffer, diagnostics = null) {
+        const events = [];
+        let offset = 0;
+        let parsedFrames = 0;
+        let sawIncompleteFrame = false;
+
+        if (buffer.length > 0 && buffer.length < 12) {
+            return {
+                events,
+                remaining: buffer
+            };
+        }
+
+        while (offset + 12 <= buffer.length) {
+            if (!this._isPlausibleAwsEventStreamFrame(buffer, offset)) {
+                const nextOffset = this._findNextAwsEventStreamFrameOffset(buffer, offset + 1);
+                if (nextOffset < 0) break;
+                offset = nextOffset;
+                continue;
+            }
+
+            const totalLength = buffer.readUInt32BE(offset);
+            const headersLength = buffer.readUInt32BE(offset + 4);
+            if (offset + totalLength > buffer.length) {
+                sawIncompleteFrame = true;
+                break;
+            }
+
+            const payloadStart = offset + 12 + headersLength;
+            const payloadEnd = offset + totalLength - 4;
+            if (payloadStart <= payloadEnd) {
+                const payloadText = buffer.subarray(payloadStart, payloadEnd).toString('utf8');
+                const parsed = this.parseAwsEventStreamBuffer(payloadText, diagnostics);
+                events.push(...parsed.events);
+            }
+
+            parsedFrames++;
+            offset += totalLength;
+        }
+
+        if (parsedFrames === 0 && !sawIncompleteFrame) {
+            const parsed = this.parseAwsEventStreamBuffer(buffer.toString('utf8'), diagnostics);
+            return {
+                events: parsed.events,
+                remaining: Buffer.from(parsed.remaining || '', 'utf8')
+            };
+        }
+
+        return {
+            events,
+            remaining: buffer.subarray(offset)
+        };
+    }
+
+    parseAwsEventStreamBuffer(buffer, diagnostics = null) {
+        if (Buffer.isBuffer(buffer)) {
+            return this._parseAwsEventStreamByteBuffer(buffer, diagnostics);
+        }
+
         const events = [];
         let remaining = buffer;
         let searchStart = 0;
@@ -2577,13 +2681,24 @@ ${identityGuardInstruction}
             const jsonStr = remaining.substring(jsonStart, jsonEnd + 1);
             try {
                 const parsed = JSON.parse(jsonStr);
+                this._recordKiroStreamParseDiagnostic(diagnostics, parsed);
+                const hasContentField = parsed.content !== undefined && !parsed.followupPrompt;
+                const hasTextFallbackField = parsed.text !== undefined && !parsed.followupPrompt;
+                const hasVisibleContent = hasContentField && (
+                    typeof parsed.content !== 'string' || parsed.content.trim().length > 0
+                );
                 // 处理 content 事件
-                if (parsed.content !== undefined && !parsed.followupPrompt) {
+                if (hasContentField && (hasVisibleContent || !hasTextFallbackField)) {
                     // 处理转义字符
                     let decodedContent = parsed.content;
                     // 无须处理转义的换行符，原来要处理是因为智能体返回的 content 需要通过换行符切割不同的json
                     // decodedContent = decodedContent.replace(/(?<!\\)\\n/g, '\n');
                     events.push({ type: 'content', data: decodedContent });
+                }
+                // Opus 4.8 can return visible text as `text`; keep it as a fallback
+                // so normal streams that also contain `content` do not double emit.
+                else if (hasTextFallbackField) {
+                    events.push({ type: 'textFallback', data: parsed.text });
                 }
                 // 处理结构化工具调用事件 - 开始事件（包含 name 和 toolUseId）
                 else if (parsed.name && parsed.toolUseId) {
@@ -2626,6 +2741,7 @@ ${identityGuardInstruction}
                     });
                 }
             } catch (e) {
+                if (diagnostics) diagnostics.parseErrors++;
                 // JSON 解析失败，跳过这个 "{" 继续搜索，避免二进制头部中的偶然字符阻塞后续 payload
                 searchStart = jsonStart + 1;
                 continue;
@@ -2682,6 +2798,25 @@ ${identityGuardInstruction}
         let stream = null;
         let releaseThrottle = () => {};
         let hasYieldedStreamEvent = false;
+        const streamDiagnostics = {
+            chunks: 0,
+            chunkChars: 0,
+            jsonObjects: 0,
+            parseErrors: 0,
+            emittedEvents: {},
+            keySignatures: {},
+            contentFields: 0,
+            contentChars: 0,
+            textFields: 0,
+            textChars: 0,
+            inputFields: 0,
+            inputChars: 0,
+            nameFields: 0,
+            toolUseIdFields: 0,
+            stopFields: 0,
+            contextUsageFields: 0,
+            followupPromptFields: 0
+        };
         try {
             const axiosConfig = {
                 method: 'post',
@@ -2695,19 +2830,29 @@ ${identityGuardInstruction}
             const response = await this.axiosInstance.request(axiosConfig);
 
             stream = response.data;
-            let buffer = '';
+            let buffer = Buffer.alloc(0);
             let lastContentEvent = null;  // 用于检测连续重复的 content 事件
+            const textFallbackEvents = [];
+            let hasContentOutput = false;
+            let hasNonTextFallbackOutput = false;
 
             for await (const chunk of stream) {
-                buffer += chunk.toString();
+                const chunkBuffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                streamDiagnostics.chunks++;
+                streamDiagnostics.chunkChars += chunkBuffer.length;
+                buffer = Buffer.concat([buffer, chunkBuffer]);
                 
                 // 解析缓冲区中的事件
-                const { events, remaining } = this.parseAwsEventStreamBuffer(buffer);
+                const { events, remaining } = this.parseAwsEventStreamBuffer(buffer, streamDiagnostics);
                 buffer = remaining;
                 
                 // yield 所有事件，但过滤连续完全相同的 content 事件（Kiro API 有时会重复发送）
                 for (const event of events) {
+                    streamDiagnostics.emittedEvents[event.type] = (streamDiagnostics.emittedEvents[event.type] || 0) + 1;
                     if (event.type === 'content' && event.data) {
+                        const hasVisibleEventContent = (
+                            typeof event.data !== 'string' || event.data.trim().length > 0
+                        );
                         // 检查是否与上一个 content 事件完全相同
                         if (lastContentEvent === event.data) {
                             // 跳过重复的内容
@@ -2715,25 +2860,66 @@ ${identityGuardInstruction}
                         }
                         lastContentEvent = event.data;
                         hasYieldedStreamEvent = true;
+                        hasContentOutput = hasContentOutput || hasVisibleEventContent;
                         yield { type: 'content', content: event.data };
+                    } else if (event.type === 'textFallback') {
+                        if (event.data) {
+                            textFallbackEvents.push(event.data);
+                        }
                     } else if (event.type === 'toolUse') {
                         const toolUse = {
                             ...event.data,
                             name: toolNameMaps?.fromKiroName ? toolNameMaps.fromKiroName(event.data?.name) : event.data?.name
                         };
                         hasYieldedStreamEvent = true;
+                        hasNonTextFallbackOutput = true;
                         yield { type: 'toolUse', toolUse };
                     } else if (event.type === 'toolUseInput') {
                         hasYieldedStreamEvent = true;
+                        hasNonTextFallbackOutput = true;
                         yield { type: 'toolUseInput', input: event.data.input };
                     } else if (event.type === 'toolUseStop') {
                         hasYieldedStreamEvent = true;
+                        hasNonTextFallbackOutput = true;
                         yield { type: 'toolUseStop', stop: event.data.stop };
                     } else if (event.type === 'contextUsage') {
                         hasYieldedStreamEvent = true;
                         yield { type: 'contextUsage', contextUsagePercentage: event.data.contextUsagePercentage };
                     }
                 }
+            }
+            if (!hasContentOutput && !hasNonTextFallbackOutput && textFallbackEvents.length > 0) {
+                logger.warn(`[Kiro Stream] using text fallback events: count=${textFallbackEvents.length}`);
+                for (const fallbackText of textFallbackEvents) {
+                    hasYieldedStreamEvent = true;
+                    yield { type: 'content', content: fallbackText };
+                }
+            }
+            if (!hasContentOutput && !hasNonTextFallbackOutput && textFallbackEvents.length === 0) {
+                const keySignatureEntries = Object.entries(streamDiagnostics.keySignatures)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 8)
+                    .map(([keys, count]) => ({ keys, count }));
+                logger.warn('[Kiro Stream] empty visible output diagnostic: ' + JSON.stringify({
+                    chunks: streamDiagnostics.chunks,
+                    chunkChars: streamDiagnostics.chunkChars,
+                    remainingBufferChars: buffer.length,
+                    jsonObjects: streamDiagnostics.jsonObjects,
+                    parseErrors: streamDiagnostics.parseErrors,
+                    emittedEvents: streamDiagnostics.emittedEvents,
+                    keySignatures: keySignatureEntries,
+                    contentFields: streamDiagnostics.contentFields,
+                    contentChars: streamDiagnostics.contentChars,
+                    textFields: streamDiagnostics.textFields,
+                    textChars: streamDiagnostics.textChars,
+                    inputFields: streamDiagnostics.inputFields,
+                    inputChars: streamDiagnostics.inputChars,
+                    nameFields: streamDiagnostics.nameFields,
+                    toolUseIdFields: streamDiagnostics.toolUseIdFields,
+                    stopFields: streamDiagnostics.stopFields,
+                    contextUsageFields: streamDiagnostics.contextUsageFields,
+                    followupPromptFields: streamDiagnostics.followupPromptFields
+                }));
             }
         } catch (error) {
             // 确保出错时关闭流
@@ -3423,6 +3609,21 @@ ${identityGuardInstruction}
             if (outputTokens <= 0 && emittedOutputCharCount > 0) {
                 outputTokens = Math.max(1, Math.ceil(emittedOutputCharCount / 4));
                 logger.warn(`[Kiro Stream] output token fallback used: chars=${emittedOutputCharCount}, tokens=${outputTokens}`);
+            }
+
+            if (!streamState.hasVisibleText && toolCalls.length === 0) {
+                logger.warn('[Kiro Stream] no visible Claude text diagnostic: ' + JSON.stringify({
+                    thinkingRequested,
+                    hasThinkingContent: streamState.hasThinkingContent,
+                    thinkingExtracted: streamState.thinkingExtracted,
+                    inThinking: streamState.inThinking,
+                    totalContentChars: totalContent.length,
+                    emittedOutputCharCount,
+                    pendingTextBeforeThinkingChars: streamState.pendingTextBeforeThinking.length,
+                    bufferChars: streamState.buffer.length,
+                    contextUsageReceived: contextUsagePercentage !== null,
+                    outputTokens
+                }));
             }
 
             // 计算 input tokens

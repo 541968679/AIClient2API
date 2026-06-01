@@ -52,6 +52,8 @@ When production-facing AIClient2API requirements change, update:
 
 - Provider adapter guide: `docs/PROVIDER_ADAPTER_GUIDE.md`.
 - Kiro/custom changes: `docs/CHANGELOG_CUSTOM.md`.
+- Kiro Opus 4.7/4.8 empty stream investigation:
+  `docs/KIRO_OPUS_47_48_EMPTY_STREAM_DEBUG_2026-06-01.md`.
 - Sub2API-side Kiro history: `E:\cursor project\api2sub\docs\dev\KIRO_PROXY.md`.
 - Sub2API-side web search debugging:
   `E:\cursor project\api2sub\docs\dev\KIRO_WEB_SEARCH_DEBUG.md`.

@@ -104,4 +104,46 @@ describe('Kiro stream usage estimation', () => {
         expect(messageDelta.usage.output_tokens).toBe(Math.ceil('fallback text'.length / 4));
         expect(events.at(-1)).toEqual({ type: 'message_stop' });
     });
+
+    test('treats thinking-only streams as completed turns', async () => {
+        const service = new KiroApiService({
+            MODEL_PROVIDER: 'claude-kiro-oauth'
+        });
+        service.isInitialized = true;
+        service.isExpiryDateNear = jest.fn(() => false);
+        service._ensureAccessTokenForRequest = jest.fn(async () => {});
+        service.streamApiReal = jest.fn(async function* () {
+            yield { type: 'content', content: '<thinking>\ninternal reasoning</thinking>' };
+        });
+
+        const requestBody = {
+            model: 'claude-opus-4-6',
+            max_tokens: 16,
+            stream: true,
+            thinking: {
+                type: 'enabled',
+                budget_tokens: 1024
+            },
+            messages: [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'Think briefly.' }
+                    ]
+                }
+            ]
+        };
+
+        const events = [];
+        for await (const event of service.generateContentStream('claude-opus-4-6', requestBody)) {
+            events.push(event);
+        }
+
+        const messageDelta = events.find(event => event.type === 'message_delta');
+        const textDelta = events.find(event => event.delta?.type === 'text_delta');
+        expect(messageDelta).toBeDefined();
+        expect(messageDelta.delta.stop_reason).toBe('end_turn');
+        expect(textDelta.delta.text).toBe(' ');
+        expect(events.at(-1)).toEqual({ type: 'message_stop' });
+    });
 });

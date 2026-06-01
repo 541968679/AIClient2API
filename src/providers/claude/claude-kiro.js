@@ -2664,6 +2664,7 @@ ${identityGuardInstruction}
 
         let stream = null;
         let releaseThrottle = () => {};
+        let hasYieldedStreamEvent = false;
         try {
             const axiosConfig = {
                 method: 'post',
@@ -2696,18 +2697,23 @@ ${identityGuardInstruction}
                             continue;
                         }
                         lastContentEvent = event.data;
+                        hasYieldedStreamEvent = true;
                         yield { type: 'content', content: event.data };
                     } else if (event.type === 'toolUse') {
                         const toolUse = {
                             ...event.data,
                             name: toolNameMaps?.fromKiroName ? toolNameMaps.fromKiroName(event.data?.name) : event.data?.name
                         };
+                        hasYieldedStreamEvent = true;
                         yield { type: 'toolUse', toolUse };
                     } else if (event.type === 'toolUseInput') {
+                        hasYieldedStreamEvent = true;
                         yield { type: 'toolUseInput', input: event.data.input };
                     } else if (event.type === 'toolUseStop') {
+                        hasYieldedStreamEvent = true;
                         yield { type: 'toolUseStop', stop: event.data.stop };
                     } else if (event.type === 'contextUsage') {
+                        hasYieldedStreamEvent = true;
                         yield { type: 'contextUsage', contextUsagePercentage: event.data.contextUsagePercentage };
                     }
                 }
@@ -2781,6 +2787,11 @@ ${identityGuardInstruction}
 
             // Handle network errors (ECONNRESET, ETIMEDOUT, etc.) with exponential backoff
             if (isNetworkError && retryCount < maxRetries) {
+                if (hasYieldedStreamEvent) {
+                    const errorIdentifier = errorCode || errorMessage.substring(0, 50);
+                    logger.warn(`[Kiro] Network error (${errorIdentifier}) in stream after data was yielded. Skipping internal retry to avoid duplicate output.`);
+                    throw error;
+                }
                 const delay = baseDelay * Math.pow(2, retryCount);
                 const errorIdentifier = errorCode || errorMessage.substring(0, 50);
                 logger.info(`[Kiro] Network error (${errorIdentifier}) in stream. Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
@@ -3358,7 +3369,7 @@ ${identityGuardInstruction}
                 !streamState.hasVisibleText &&
                 toolCalls.length === 0;
             if (emittedOnlyThinking) {
-                logger.warn('[Kiro Stream] Thinking-only response received; emitting minimal text block and max_tokens stop_reason');
+                logger.warn('[Kiro Stream] Thinking-only response received; emitting minimal text block and end_turn stop_reason');
                 yield* pushEvents(createTextDeltaEvents(' '));
             }
 
@@ -3417,7 +3428,7 @@ ${identityGuardInstruction}
             const cacheReadTokens = Math.round(inputTokens * cacheRatio);
             yield {
                 type: "message_delta",
-                delta: { stop_reason: toolCalls.length > 0 ? "tool_use" : (emittedOnlyThinking ? "max_tokens" : "end_turn") },
+                delta: { stop_reason: toolCalls.length > 0 ? "tool_use" : "end_turn" },
                 usage: {
                     input_tokens: inputTokens - cacheReadTokens,
                     output_tokens: outputTokens,
@@ -3638,7 +3649,7 @@ ${identityGuardInstruction}
             if (hasThinkingContent && !hasTextContent && (!toolCalls || toolCalls.length === 0)) {
                 contentArray.push({ type: 'text', text: ' ' });
                 outputTokens += this.countTextTokens(' ');
-                stopReason = "max_tokens";
+                stopReason = "end_turn";
             }
 
             return {

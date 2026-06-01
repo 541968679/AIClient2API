@@ -1,5 +1,26 @@
 # Custom Change Log
 
+## 2026-06-01 - Kiro thinking-only stream completion semantics
+
+Changed `src/providers/claude/claude-kiro.js` so Kiro thinking-only Claude
+responses finish as completed turns instead of reporting `max_tokens`.
+
+What changed:
+
+- Kept the minimal text fallback for thinking-only responses so Claude clients
+  still receive a visible text block.
+- Changed thinking-only stream and non-stream stop reasons from `max_tokens` to
+  `end_turn` to avoid clients treating the response as truncated and issuing an
+  immediate continuation request.
+- Preserved the previous guard that skips provider-internal stream retries after
+  output has already been yielded.
+- Added focused coverage in `tests/kiro-stream-usage-estimation.test.js`.
+
+Verification:
+
+- `node --check src\providers\claude\claude-kiro.js`
+- `npx jest tests/kiro-stream-usage-estimation.test.js --runInBand`
+
 ## 2026-06-01 - docs: add agent rules for Sub2API sidecar work
 
 Added repository-root agent rules and an explicit Sub2API integration contract

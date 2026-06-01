@@ -1,5 +1,27 @@
 # Custom Change Log
 
+## 2026-06-01 - Kiro explicit-history conversation isolation
+
+Changed `src/providers/claude/claude-kiro.js` so Claude Code requests that
+already include explicit multi-turn history use a fresh Kiro/Amazon Q
+`conversationId` per request instead of reusing the metadata-derived session ID.
+
+What changed:
+
+- Kept metadata-derived stable `conversationId` only for single-turn requests
+  where the upstream server-side conversation cache is not being combined with
+  explicit client history.
+- Switched multi-turn explicit-history requests to fresh conversation IDs to
+  avoid A2A server-side state conflicting with the full history sent by Claude
+  Code, which could produce successful streams with no visible output.
+- Added focused request-conversion coverage in
+  `tests/claude-kiro-request.test.js`.
+
+Verification:
+
+- `node --check src\providers\claude\claude-kiro.js`
+- `npx jest --runInBand --runTestsByPath tests/claude-kiro-request.test.js tests/kiro-stream-usage-estimation.test.js tests/kiro-provider-leak-sanitization.test.js`
+
 ## 2026-06-01 - Kiro thinking-only stream completion semantics
 
 Changed `src/providers/claude/claude-kiro.js` so Kiro thinking-only Claude

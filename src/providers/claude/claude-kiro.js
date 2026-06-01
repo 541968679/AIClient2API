@@ -868,16 +868,10 @@ function deduplicateToolCalls(toolCalls) {
     return uniqueToolCalls;
 }
 
-/**
- * Derive a stable conversationId from session metadata.
- * Claude Code sends metadata.user_id containing session info; we hash it to get
- * a deterministic UUID so Amazon Q can reuse server-side context cache across turns.
- */
 function deriveStableConversationId(metadata) {
-    if (!metadata) return uuidv4();
-
+    if (!metadata) return null;
     const rawUserId = metadata.user_id || metadata.userId || '';
-    if (!rawUserId) return uuidv4();
+    if (!rawUserId) return null;
 
     let sessionKey = '';
     try {
@@ -887,7 +881,7 @@ function deriveStableConversationId(metadata) {
         sessionKey = rawUserId;
     }
 
-    if (!sessionKey) return uuidv4();
+    if (!sessionKey) return null;
 
     const hash = crypto.createHash('sha256').update(sessionKey).digest('hex');
     return [
@@ -897,6 +891,29 @@ function deriveStableConversationId(metadata) {
         ((parseInt(hash[16], 16) & 0x3) | 0x8).toString(16) + hash.slice(17, 20),
         hash.slice(20, 32)
     ].join('-');
+}
+
+function selectKiroConversationId(metadata, messages) {
+    const hasExplicitHistory = Array.isArray(messages) && messages.length > 1;
+    if (hasExplicitHistory) {
+        return {
+            conversationId: uuidv4(),
+            source: metadata ? 'fresh-client-history' : 'fresh-no-metadata-history'
+        };
+    }
+
+    const stableConversationId = deriveStableConversationId(metadata);
+    if (stableConversationId) {
+        return {
+            conversationId: stableConversationId,
+            source: 'stable-metadata'
+        };
+    }
+
+    return {
+        conversationId: uuidv4(),
+        source: metadata ? 'fresh-metadata-without-session' : 'fresh-no-metadata'
+    };
 }
 
 /**
@@ -1420,8 +1437,8 @@ async saveCredentialsToFile(filePath, newData) {
      * Build CodeWhisperer request from OpenAI messages
      */
     async buildCodewhispererRequest(messages, model, tools = null, inSystemPrompt = null, thinking = null, metadata = null) {
-        const conversationId = deriveStableConversationId(metadata);
-        logger.info(`[Kiro] conversationId: ${conversationId} (metadata: ${!!metadata})`);
+        const { conversationId, source: conversationIdSource } = selectKiroConversationId(metadata, messages);
+        logger.info(`[Kiro] conversationId: ${conversationId} (source: ${conversationIdSource}, metadata: ${!!metadata})`);
         
         const identityGuardInstruction = [
             'Identity and provider disclosure:',
